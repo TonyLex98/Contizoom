@@ -45,22 +45,24 @@ InputResult InputHandler::handleKeyPress(const InputEvent& event) {
 
     // Navigation (pan viewport in LOGICAL coordinates)
     double panAmt = 20.0 * panSpeed_;
-    if (key == 'w' || key == 'k') { canvas_.viewport_.centerY += panAmt; return InputResult::Handled; }
-    if (key == 's' || key == 'j') { canvas_.viewport_.centerY -= panAmt; return InputResult::Handled; }
-    if (key == 'a' || key == 'h') { canvas_.viewport_.centerX -= panAmt; return InputResult::Handled; }
-    if (key == 'd' || key == 'l') { canvas_.viewport_.centerX += panAmt; return InputResult::Handled; }
+    if (key == 'w' || key == 'k') { canvas_.viewport_.centerY += panAmt; canvas_.markCanvasChanged(); return InputResult::Handled; }
+    if (key == 's' || key == 'j') { canvas_.viewport_.centerY -= panAmt; canvas_.markCanvasChanged(); return InputResult::Handled; }
+    if (key == 'a' || key == 'h') { canvas_.viewport_.centerX -= panAmt; canvas_.markCanvasChanged(); return InputResult::Handled; }
+    if (key == 'd' || key == 'l') { canvas_.viewport_.centerX += panAmt; canvas_.markCanvasChanged(); return InputResult::Handled; }
 
     // Zoom level
     if (key >= '0' && key <= '9') {
         canvas_.viewport_.zoomLevel = key - '0';
+        canvas_.markCanvasChanged();
         return InputResult::Handled;
     }
     if (key == '[') {
         canvas_.viewport_.zoomLevel--;
         autoCenterViewportOnRoot();
+        canvas_.markCanvasChanged();
         return InputResult::Handled;
     }
-    if (key == ']') { canvas_.viewport_.zoomLevel++; return InputResult::Handled; }
+    if (key == ']') { canvas_.viewport_.zoomLevel++; canvas_.markCanvasChanged(); return InputResult::Handled; }
     if (key == 'z') { zHeld_ = true; return InputResult::Handled; }
 
     // Actions
@@ -74,8 +76,8 @@ InputResult InputHandler::handleKeyPress(const InputEvent& event) {
     if (key == 'r') { renameSelected(); return InputResult::Handled; }
     if (key == 'x') { deleteSelected(); return InputResult::Handled; }
     if (key == 'n') { createNodeAtCursor(); return InputResult::Handled; }
-    if (key == '+') { canvas_.viewport_.textScale = std::min(5.0, canvas_.viewport_.textScale * 1.2); return InputResult::Handled; }
-    if (key == '-') { canvas_.viewport_.textScale = std::max(0.1, canvas_.viewport_.textScale / 1.2); return InputResult::Handled; }
+    if (key == '+') { canvas_.viewport_.textScale = std::min(5.0, canvas_.viewport_.textScale * 1.2); canvas_.markCanvasChanged(); return InputResult::Handled; }
+    if (key == '-') { canvas_.viewport_.textScale = std::max(0.1, canvas_.viewport_.textScale / 1.2); canvas_.markCanvasChanged(); return InputResult::Handled; }
     if (key == '\t') {
         if (event.mods.shift) demoteSelected(); else promoteSelected();
         return InputResult::Handled;
@@ -178,6 +180,7 @@ InputResult InputHandler::handleMouseMove(const InputEvent& event) {
         int dsy = event.mouseY - lastScreenY_;
         canvas_.viewport_.centerX -= dsx / canvas_.viewport_.textScale;
         canvas_.viewport_.centerY -= dsy / canvas_.viewport_.textScale;
+        canvas_.markCanvasChanged();
         lastScreenX_ = event.mouseX;
         lastScreenY_ = event.mouseY;
         return InputResult::Handled;
@@ -316,11 +319,9 @@ InputResult InputHandler::handleMouseUp(const InputEvent& event) {
         for (const auto& pId : parents) {
             canvas_.resolveOverlaps(pId);
         }
-
-        // Notify changed for all selected nodes (incremental save)
         for (auto& [_, n] : canvas_.allNodes()) {
             if (n->state == NodeState::Selected) {
-                canvas_.notifyChanged(n->uuid);
+                canvas_.markChanged(n->uuid);
             }
         }
 
@@ -358,6 +359,7 @@ InputResult InputHandler::handleMouseUp(const InputEvent& event) {
         canvas_.viewport_.centerX = lx - (event.mouseX - cx) / newScale;
         canvas_.viewport_.centerY = ly - (event.mouseY - cy) / newScale;
         canvas_.viewport_.textScale = newScale;
+        canvas_.markCanvasChanged();
     }
     return InputResult::Handled;
 }
@@ -395,7 +397,13 @@ void InputHandler::createFrame() {
 }
 
 void InputHandler::deleteSelected() {
-    for (auto& [u,n] : canvas_.allNodes()) if (n->state==NodeState::Selected) canvas_.removeNode(u);
+    std::vector<std::string> selected;
+    for (const auto& [u, n] : canvas_.allNodes()) {
+        if (n->state == NodeState::Selected) selected.push_back(u);
+    }
+    for (const auto& u : selected) {
+        canvas_.removeNode(u);
+    }
 }
 
 void InputHandler::promoteSelected() {
@@ -442,6 +450,7 @@ void InputHandler::createNodeAtCursor() {
         auto node = canvas_.getNode(uuid);
         if (node) {
             node->autoResize();
+            canvas_.markChanged(uuid);
             selectNode(uuid);
             startEditing(uuid);
             if (!parentId.empty()) {
@@ -763,7 +772,7 @@ void InputHandler::commitEdit() {
         node->text = editText_;
         node->autoResize();
     }
-    canvas_.notifyChanged(*editingNode_);
+    canvas_.markChanged(*editingNode_);
     editingNode_.reset();
     canvas_.editOverlay_.active = false;
 }

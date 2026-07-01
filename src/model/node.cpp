@@ -1,6 +1,7 @@
 #include "model/node.h"
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 
 namespace ic {
 
@@ -8,7 +9,6 @@ std::optional<std::string> Node::resolvePath(const std::string& path,
                                              const std::map<std::string, std::shared_ptr<Node>>& allNodes) const {
     if (path.empty()) return std::nullopt;
 
-    // Direct UUID reference: @uuid
     if (path[0] == '@') {
         std::string targetUuid = path.substr(1);
         auto it = allNodes.find(targetUuid);
@@ -18,13 +18,11 @@ std::optional<std::string> Node::resolvePath(const std::string& path,
         return std::nullopt;
     }
 
-    // Relative path: ./, ../
     std::string currentUuid = uuid;
     std::string remaining = path;
 
     while (!remaining.empty()) {
         if (remaining.substr(0, 3) == "../") {
-            // Go to parent
             auto it = allNodes.find(currentUuid);
             if (it != allNodes.end() && !it->second->parentId.empty()) {
                 currentUuid = it->second->parentId;
@@ -32,9 +30,7 @@ std::optional<std::string> Node::resolvePath(const std::string& path,
             remaining = remaining.substr(3);
         }
         else if (remaining.substr(0, 2) == "./") {
-            // Stay at current, resolve sibling name
             remaining = remaining.substr(2);
-            // Find sibling with matching tag
             auto it = allNodes.find(currentUuid);
             if (it != allNodes.end()) {
                 const auto& parent = allNodes.find(it->second->parentId);
@@ -65,7 +61,6 @@ void Node::autoResize(int charsPerLine) {
         return;
     }
 
-    // Count lines and max line length
     int lines = 1;
     int maxLen = 0;
     int currentLen = 0;
@@ -82,13 +77,11 @@ void Node::autoResize(int charsPerLine) {
     }
     maxLen = std::max(maxLen, currentLen);
 
-    // Wrap long lines
     int wrappedLines = lines;
     if (maxLen > charsPerLine) {
         wrappedLines += maxLen / charsPerLine;
     }
 
-    // Only GROW if text doesn't fit, never shrink below explicit dimensions
     double neededW = std::max(20.0, std::min(static_cast<double>(maxLen + 2), static_cast<double>(charsPerLine)));
     double neededH = std::max(4.0, static_cast<double>(wrappedLines + 1) * 1.2);
     rect.width = std::max(rect.width, neededW);

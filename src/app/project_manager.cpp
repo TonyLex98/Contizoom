@@ -9,23 +9,42 @@
 #include <algorithm>
 #include <iostream>
 #include <chrono>
+#include <cctype>
 
 namespace ic {
 namespace fs = std::filesystem;
+
+static std::string sanitizeProjectName(const std::string& name) {
+    std::string result;
+    result.reserve(name.size());
+    for (unsigned char ch : name) {
+        if (std::isalnum(ch) || ch == '-' || ch == '_') {
+            result += static_cast<char>(ch);
+        } else if (ch == ' ' || ch == '.') {
+            result += '_';
+        }
+    }
+    return result.empty() ? "Untitled" : result;
+}
+
+static std::string defaultProjectPath(const ProjectInfo& info) {
+    fs::path dir = ProjectManager::defaultProjectsDir();
+    std::string base = sanitizeProjectName(info.name);
+    fs::path candidate = dir / (base + ".canvas");
+    int suffix = 2;
+    while (fs::exists(candidate)) {
+        candidate = dir / (base + "_" + std::to_string(suffix++) + ".canvas");
+    }
+    return candidate.string();
+}
 
 ProjectManager::ProjectManager() {
 }
 
 ProjectManager::~ProjectManager() {
-    // Clean up: close all projects (without prompting)
-    for (auto& p : projects_) {
-        if (p.dirty) {
-            // Try to save dirty projects on destruction
-            auto it = canvases_.find(p.uuid);
-            if (it != canvases_.end() && storage_ && !p.path.empty()) {
-                storage_->saveCanvas(*(it->second), p.path);
-            }
-        }
+    // Flush pending auto-save on all canvases
+    for (auto& [uuid, canvas] : canvases_) {
+        canvas->flushChanges();
     }
 }
 
@@ -45,6 +64,46 @@ std::string ProjectManager::defaultProjectsDir() {
     return dir.string();
 }
 
+void ProjectManager::setupAutoSave(const std::string& uuid) {
+    auto it = canvases_.find(uuid);
+    if (it == canvases_.end() || !storage_) return;
+
+    auto pIt = std::find_if(projects_.begin(), projects_.end(),
+        [&](const ProjectInfo& p) { return p.uuid == uuid; });
+    if (pIt == projects_.end()) return;
+
+    // Canvas onChanged callback: save node changes incrementally and config changes fully.
+    it->second->onChanged([this, uuid, path = pIt->path](const std::set<std::string>& changedUuids,
+                                                         bool canvasChanged) {
+        if (path.empty() || !storage_) return; // Not yet saved to disk
+
+        auto canvasIt = canvases_.find(uuid);
+        if (canvasIt == canvases_.end()) return;
+
+        if (canvasChanged) {
+            if (storage_->saveCanvas(*canvasIt->second, path)) {
+                if (auto info = findProject(uuid)) {
+                    info->modifiedAt = std::time(nullptr);
+                }
+            }
+            return;
+        }
+
+        for (const auto& nodeUuid : changedUuids) {
+            auto node = canvasIt->second->getNode(nodeUuid);
+            if (node) {
+                node->modifiedAt = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count());
+                storage_->saveNode(node.get(), path);
+            }
+        }
+    });
+
+    // Set project path so canvas knows where to save
+    it->second->setProjectPath(pIt->path);
+}
+
 std::string ProjectManager::createProject(const std::string& name) {
     std::string uuid = generateProjectUuid();
     auto canvas = std::make_unique<Canvas>();
@@ -55,40 +114,13 @@ std::string ProjectManager::createProject(const std::string& name) {
     ProjectInfo info;
     info.uuid = uuid;
     info.name = name;
-    info.path.clear(); // Unsaved
-
-    canvas->onNodeChanged([this, uuid](const std::string& nodeUuid) {
-        auto it = canvases_.find(uuid);
-        if (it == canvases_.end()) return;
-        auto pIt = std::find_if(projects_.begin(), projects_.end(),
-            [&](const ProjectInfo& p) { return p.uuid == uuid; });
-        if (pIt == projects_.end()) return;
-        pIt->modifiedAt = std::time(nullptr);
-        // Incremental save: just the changed node
-        if (!pIt->path.empty() && storage_) {
-            auto node = it->second->getNode(nodeUuid);
-            if (node) storage_->saveNode(node.get(), pIt->path);
-        }
-    });
-
-    canvas->onChanged([this, uuid]() {
-        auto it = canvases_.find(uuid);
-        if (it == canvases_.end()) return;
-        auto pIt = std::find_if(projects_.begin(), projects_.end(),
-            [&](const ProjectInfo& p) { return p.uuid == uuid; });
-        if (pIt == projects_.end()) return;
-        pIt->dirty = true;
-        pIt->modifiedAt = std::time(nullptr);
-    });
-
-    info.dirty = false;
+    info.path.clear();
     info.createdAt = canvas->createdAt;
     info.modifiedAt = info.createdAt;
 
     canvases_[uuid] = std::move(canvas);
     projects_.push_back(info);
 
-    // Auto-switch to new project
     switchTo(uuid);
     return uuid;
 }
@@ -108,35 +140,10 @@ std::string ProjectManager::openProject(const std::string& path) {
     std::string uuid = generateProjectUuid();
     canvas->modifiedAt = std::time(nullptr);
 
-    canvas->onNodeChanged([this, uuid](const std::string& nodeUuid) {
-        auto it = canvases_.find(uuid);
-        if (it == canvases_.end()) return;
-        auto pIt = std::find_if(projects_.begin(), projects_.end(),
-            [&](const ProjectInfo& p) { return p.uuid == uuid; });
-        if (pIt == projects_.end()) return;
-        pIt->modifiedAt = std::time(nullptr);
-        // Incremental save: just the changed node
-        if (!pIt->path.empty() && storage_) {
-            auto node = it->second->getNode(nodeUuid);
-            if (node) storage_->saveNode(node.get(), pIt->path);
-        }
-    });
-
-    canvas->onChanged([this, uuid]() {
-        auto it = canvases_.find(uuid);
-        if (it == canvases_.end()) return;
-        auto pIt = std::find_if(projects_.begin(), projects_.end(),
-            [&](const ProjectInfo& p) { return p.uuid == uuid; });
-        if (pIt == projects_.end()) return;
-        pIt->dirty = true;
-        pIt->modifiedAt = std::time(nullptr);
-    });
-
     ProjectInfo info;
     info.uuid = uuid;
     info.name = canvas->canvasName;
     info.path = path;
-    info.dirty = false;
     info.createdAt = canvas->createdAt;
     info.modifiedAt = canvas->modifiedAt;
 
@@ -145,6 +152,9 @@ std::string ProjectManager::openProject(const std::string& path) {
     addRecent(path);
 
     switchTo(uuid);
+
+    // Enable auto-save after project is fully loaded and has a path
+    setupAutoSave(uuid);
     return uuid;
 }
 
@@ -152,20 +162,23 @@ bool ProjectManager::closeProject(const std::string& uuid) {
     auto info = findProject(uuid);
     if (!info) return false;
 
-    if (info->dirty && onBeforeClose_) {
+    // Flush pending changes before closing
+    auto canvasIt = canvases_.find(uuid);
+    if (canvasIt != canvases_.end()) {
+        canvasIt->second->flushChanges();
+    }
+
+    if (onBeforeClose_) {
         if (!onBeforeClose_(*info)) return false;
     }
 
-    // Remove from projects list
     projects_.erase(
         std::remove_if(projects_.begin(), projects_.end(),
             [&](const ProjectInfo& p) { return p.uuid == uuid; }),
         projects_.end());
 
-    // Remove canvas
     canvases_.erase(uuid);
 
-    // If this was the active project, switch to another or clear
     if (activeUuid_ == uuid) {
         activeUuid_ = projects_.empty() ? "" : projects_.back().uuid;
         notifyActiveChanged();
@@ -175,7 +188,6 @@ bool ProjectManager::closeProject(const std::string& uuid) {
 }
 
 void ProjectManager::closeAll() {
-    // Close in reverse order to preserve active
     for (auto it = projects_.rbegin(); it != projects_.rend(); ++it) {
         closeProject(it->uuid);
     }
@@ -189,16 +201,22 @@ void ProjectManager::switchTo(const std::string& uuid) {
 
 bool ProjectManager::saveCurrent() {
     auto info = activeProject();
-    if (!info || !storage_ || info->path.empty()) return false;
+    if (!info || !storage_) return false;
+
+    if (info->path.empty()) {
+        return saveAs(defaultProjectPath(*info));
+    }
 
     auto it = canvases_.find(info->uuid);
     if (it == canvases_.end()) return false;
 
+    // Flush pending changes first
+    it->second->flushChanges();
+
     bool ok = storage_->saveCanvas(*(it->second), info->path);
     if (ok) {
-        info->dirty = false;
         info->modifiedAt = std::time(nullptr);
-        if (onDirtyChanged_) onDirtyChanged_(*info);
+        setupAutoSave(info->uuid); // Re-enable auto-save after full save
     }
     return ok;
 }
@@ -210,15 +228,23 @@ bool ProjectManager::saveAs(const std::string& newPath) {
     auto it = canvases_.find(info->uuid);
     if (it == canvases_.end()) return false;
 
+    // Flush pending changes first
+    it->second->flushChanges();
+
     bool ok = storage_->saveCanvas(*(it->second), newPath);
     if (ok) {
         info->path = newPath;
-        info->dirty = false;
         info->modifiedAt = std::time(nullptr);
         addRecent(newPath);
-        if (onDirtyChanged_) onDirtyChanged_(*info);
+        setupAutoSave(info->uuid);
     }
     return ok;
+}
+
+void ProjectManager::processAutoSave() {
+    for (auto& [_, canvas] : canvases_) {
+        canvas->processPendingChanges();
+    }
 }
 
 bool ProjectManager::revert() {
@@ -228,12 +254,13 @@ bool ProjectManager::revert() {
     auto it = canvases_.find(info->uuid);
     if (it == canvases_.end()) return false;
 
-    // Reload from disk
+    // Flush pending changes before reload
+    it->second->flushChanges();
+
     if (!storage_->loadCanvas(*(it->second), info->path)) return false;
 
-    info->dirty = false;
     info->modifiedAt = std::time(nullptr);
-    if (onDirtyChanged_) onDirtyChanged_(*info);
+    setupAutoSave(info->uuid);
     return true;
 }
 
@@ -282,24 +309,12 @@ std::vector<std::string> ProjectManager::recentProjects(int maxCount) const {
 }
 
 void ProjectManager::addRecent(const std::string& path) {
-    // Remove if already in list
     recentPaths_.erase(
         std::remove(recentPaths_.begin(), recentPaths_.end(), path),
         recentPaths_.end());
-    // Add to front
     recentPaths_.insert(recentPaths_.begin(), path);
-    // Keep max 10
     if (recentPaths_.size() > 10) {
         recentPaths_.resize(10);
-    }
-}
-
-void ProjectManager::markDirty(const std::string& uuid) {
-    auto info = findProject(uuid);
-    if (info && !info->dirty) {
-        info->dirty = true;
-        info->modifiedAt = std::time(nullptr);
-        if (onDirtyChanged_) onDirtyChanged_(*info);
     }
 }
 
@@ -313,7 +328,6 @@ std::string ProjectInfo::relativePath() const {
     if (path.empty()) return "[Untitled]";
     fs::path p(path);
     fs::path parent = p.parent_path();
-    // Return filename + parent for readability
     return (parent.filename() / p.filename()).string();
 }
 

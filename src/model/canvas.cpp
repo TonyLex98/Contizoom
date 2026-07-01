@@ -5,6 +5,69 @@
 namespace ic {
 
 // ====================================================================
+// Auto-save throttling
+// ====================================================================
+
+void Canvas::markChanged(const std::string& uuid) {
+    if (uuid.empty()) return;
+    changedNodes_.insert(uuid);
+    lastChangeTime_ = std::chrono::steady_clock::now();
+}
+
+void Canvas::markCanvasChanged() {
+    canvasChanged_ = true;
+    lastChangeTime_ = std::chrono::steady_clock::now();
+}
+
+void Canvas::notifyChanged(bool force) {
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastChangeTime_);
+    if (!force && elapsed < throttleDelay_) return; // Still throttling
+
+    if ((changedNodes_.empty() && !canvasChanged_) || !changed_) return;
+
+    changed_(changedNodes_, canvasChanged_);
+    changedNodes_.clear();
+    canvasChanged_ = false;
+}
+
+void Canvas::processPendingChanges() {
+    notifyChanged(false);
+}
+
+void Canvas::flushChanges() {
+    notifyChanged(true);
+}
+
+void Canvas::clear() {
+    nodes_.clear();
+    connections_.clear();
+    changedNodes_.clear();
+    canvasChanged_ = false;
+    selection_.clear();
+    editOverlay_ = EditOverlay{};
+}
+
+void Canvas::rebuildHierarchy() {
+    for (auto& [_, node] : nodes_) {
+        node->childrenUuids.clear();
+    }
+
+    for (auto& [uuid, node] : nodes_) {
+        if (node->parentId.empty()) continue;
+        auto parentIt = nodes_.find(node->parentId);
+        if (parentIt == nodes_.end()) {
+            node->parentId.clear();
+            continue;
+        }
+        auto& children = parentIt->second->childrenUuids;
+        if (std::find(children.begin(), children.end(), uuid) == children.end()) {
+            children.push_back(uuid);
+        }
+    }
+}
+
+// ====================================================================
 // Node management
 // ====================================================================
 
@@ -33,6 +96,9 @@ std::string Canvas::createNode(const std::string& text, const Rect& rect,
     }
 
     modifiedAt = now;
+    markChanged(uuid);
+    if (!parentId.empty()) markChanged(parentId);
+    markCanvasChanged();
     notifyChanged();
     return uuid;
 }
@@ -42,7 +108,6 @@ bool Canvas::removeNode(const std::string& uuid, bool recursive) {
     if (it == nodes_.end()) return false;
 
     if (recursive && !it->second->childrenUuids.empty()) {
-        // Collect all descendants
         std::vector<std::string> toRemove;
         std::vector<std::string> stack = it->second->childrenUuids;
         while (!stack.empty()) {
@@ -61,7 +126,6 @@ bool Canvas::removeNode(const std::string& uuid, bool recursive) {
         }
     }
 
-    // Remove from parent's children list
     if (!it->second->parentId.empty()) {
         auto parentIt = nodes_.find(it->second->parentId);
         if (parentIt != nodes_.end()) {
@@ -69,10 +133,10 @@ bool Canvas::removeNode(const std::string& uuid, bool recursive) {
             children.erase(
                 std::remove(children.begin(), children.end(), uuid),
                 children.end());
+            markChanged(parentIt->first);
         }
     }
 
-    // Remove connections involving this node
     std::vector<std::string> connsToRemove;
     for (const auto& [connUuid, conn] : connections_) {
         if (conn->fromUuid == uuid || conn->toUuid == uuid) {
@@ -89,6 +153,7 @@ bool Canvas::removeNode(const std::string& uuid, bool recursive) {
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
     modifiedAt = now;
+    markCanvasChanged();
     notifyChanged();
     return true;
 }
@@ -96,6 +161,19 @@ bool Canvas::removeNode(const std::string& uuid, bool recursive) {
 std::shared_ptr<Node> Canvas::getNode(const std::string& uuid) const {
     auto it = nodes_.find(uuid);
     return it != nodes_.end() ? it->second : nullptr;
+}
+
+void Canvas::insertNode(const std::string& uuid, std::shared_ptr<Node> node) {
+    nodes_[uuid] = node;
+    if (!node->parentId.empty()) {
+        auto parentIt = nodes_.find(node->parentId);
+        if (parentIt != nodes_.end()) {
+            auto& children = parentIt->second->childrenUuids;
+            if (std::find(children.begin(), children.end(), uuid) == children.end()) {
+                children.push_back(uuid);
+            }
+        }
+    }
 }
 
 std::vector<std::shared_ptr<Node>> Canvas::getNodesAtLevel(int level) const {
@@ -139,8 +217,6 @@ void Canvas::expandParentToFit(const std::string& nodeUuid, double padding) {
     double childBottom = node->rect.y + node->rect.height;
 
     bool expanded = false;
-    // Только растим размеры, никогда не сдвигаем детей
-    // Репозиционирование сделает resolveOverlaps на mouseUp
     if (childRight + padding > parent->rect.width) {
         parent->rect.width = childRight + padding;
         expanded = true;
@@ -150,8 +226,11 @@ void Canvas::expandParentToFit(const std::string& nodeUuid, double padding) {
         expanded = true;
     }
 
-    if (expanded && !parent->parentId.empty()) {
-        expandParentToFit(parent->uuid, padding);
+    if (expanded) {
+        markChanged(parent->uuid);
+        if (!parent->parentId.empty()) {
+            expandParentToFit(parent->uuid, padding);
+        }
     }
 }
 
@@ -162,37 +241,34 @@ void Canvas::preventOverlap(const std::string& nodeUuid) {
 }
 
 // ====================================================================
-// Overlap resolution — X+Y, iterative, with parent text zone
+// Overlap resolution
 // ====================================================================
 
 bool Canvas::resolveOverlaps(const std::string& parentUuid) {
     auto parent = getNode(parentUuid);
     if (!parent || parent->childrenUuids.empty()) return false;
 
-    // Вычисляем зону текста родителя (зона сверху, где рендерится текст)
     int textLines = 1;
     for (char c : parent->text) {
         if (c == '\n') textLines++;
     }
-    double textZoneY = textLines * 1.2 + 2.0; // высота текстовой зоны с отступом
-    double marginX = 3.0; // margin от левого/правого края
-    double marginY = 2.0; // margin от нижнего края
+    double textZoneY = textLines * 1.2 + 2.0;
+    double marginX = 3.0;
+    double marginY = 2.0;
 
     bool resolved = false;
-    // Адаптивный зазор: пропорционально размеру родителя, минимум 2.0, максимум 15.0
     double gap = std::max(2.0, std::min(15.0, std::max(parent->rect.width, parent->rect.height) * 0.06));
 
-    // Шаг 1: Выталкиваем детей из текстовой зоны
     for (const auto& cid : parent->childrenUuids) {
         auto child = getNode(cid);
         if (!child) continue;
         if (child->rect.y < textZoneY) {
             child->rect.y = textZoneY;
+            markChanged(cid);
             resolved = true;
         }
     }
 
-    // Шаг 2: Разрешаем пересечения и enforce минимального gap между сиблингами (итеративно)
     for (int iter = 0; iter < 50; ++iter) {
         bool anyOverlap = false;
 
@@ -209,7 +285,6 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
                 double bx1 = b->rect.x, by1 = b->rect.y;
                 double bx2 = b->rect.x + b->rect.width, by2 = b->rect.y + b->rect.height;
 
-                // Проверяем с учётом gap: если зазор меньше gap — тоже разводим
                 double ax1g = ax1 - gap / 2.0, ay1g = ay1 - gap / 2.0;
                 double ax2g = ax2 + gap / 2.0, ay2g = ay2 + gap / 2.0;
                 double bx1g = bx1 - gap / 2.0, by1g = by1 - gap / 2.0;
@@ -221,7 +296,6 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
                 double overlapY = std::min(ay2 - by1, by2 - ay1);
 
                 if (overlapX < overlapY) {
-                    // Разделяем по X
                     double aCenter = a->rect.centerX();
                     double bCenter = b->rect.centerX();
                     if (aCenter < bCenter) {
@@ -232,7 +306,6 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
                         b->rect.x -= (overlapX + gap) / 2.0;
                     }
                 } else {
-                    // Разделяем по Y
                     double aCenter = a->rect.centerY();
                     double bCenter = b->rect.centerY();
                     if (aCenter < bCenter) {
@@ -243,7 +316,7 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
                         b->rect.y -= (overlapY + gap) / 2.0;
                     }
                 }
-                // Clamp внутри цикла: не поднимать выше текста, не вылетать влево
+
                 if (a->rect.y < textZoneY) a->rect.y = textZoneY;
                 if (b->rect.y < textZoneY) b->rect.y = textZoneY;
                 if (a->rect.x < marginX) a->rect.x = marginX;
@@ -255,15 +328,16 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
         resolved = true;
     }
 
-    // Шаг 3: Клампим детей в границы родителя
+    // Mark all children as changed (they may have been repositioned)
     for (const auto& cid : parent->childrenUuids) {
         auto child = getNode(cid);
-        if (!child) continue;
-        child->rect.x = std::max(marginX, child->rect.x);
-        child->rect.y = std::max(textZoneY, child->rect.y);
+        if (child) {
+            child->rect.x = std::max(marginX, child->rect.x);
+            child->rect.y = std::max(textZoneY, child->rect.y);
+            markChanged(cid);
+        }
     }
 
-    // Шаг 4: Расширяем родителя под всех детей
     double maxX = marginX, maxY = textZoneY;
     for (const auto& cid : parent->childrenUuids) {
         auto child = getNode(cid);
@@ -274,6 +348,7 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
     if (maxX > parent->rect.width || maxY > parent->rect.height) {
         parent->rect.width = maxX;
         parent->rect.height = maxY;
+        markChanged(parentUuid);
         resolved = true;
         if (!parent->parentId.empty()) resolveOverlaps(parent->parentId);
     }
@@ -283,13 +358,12 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
             std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
         modifiedAt = now;
-        notifyChanged();
     }
     return resolved;
 }
 
 // ====================================================================
-// Push siblings — realtime collision during drag
+// Push siblings
 // ====================================================================
 
 void Canvas::pushSiblings(const std::string& nodeUuid, double margin) {
@@ -318,7 +392,6 @@ void Canvas::pushSiblings(const std::string& nodeUuid, double margin) {
         double overlapY = std::min(ny2 - sy1, sy2 - ny1);
         double push = std::max(overlapX, overlapY) + margin;
 
-        // Толкаем сиблинга (не двигаем перетаскиваемый node)
         double nodeCenterX = node->rect.centerX();
         double sibCenterX = sib->rect.centerX();
         double nodeCenterY = node->rect.centerY();
@@ -335,14 +408,14 @@ void Canvas::pushSiblings(const std::string& nodeUuid, double margin) {
             else
                 sib->rect.y += push;
         }
+        markChanged(sid);
     }
 
-    // Расширяем родителя если дети вышли за границы
     expandParentToFit(nodeUuid, 2.0);
 }
 
 // ====================================================================
-// Transfer node — move to new parent with auto-positioning
+// Transfer node
 // ====================================================================
 
 bool Canvas::transferNode(const std::string& nodeUuid,
@@ -351,9 +424,8 @@ bool Canvas::transferNode(const std::string& nodeUuid,
     auto node = getNode(nodeUuid);
     auto newParent = getNode(newParentUuid);
     if (!node || !newParent) return false;
-    if (node->parentId == newParentUuid) return true; // Already there
+    if (node->parentId == newParentUuid) return true;
 
-    // Remove from old parent
     std::string oldParentId = node->parentId;
     if (!oldParentId.empty()) {
         auto oldParent = getNode(oldParentId);
@@ -362,21 +434,19 @@ bool Canvas::transferNode(const std::string& nodeUuid,
             children.erase(
                 std::remove(children.begin(), children.end(), nodeUuid),
                 children.end());
+            markChanged(oldParentId);
         }
     }
 
-    // Compute placement
     double targetX, targetY;
     double gap = 5.0;
 
     if (newParent->childrenUuids.empty()) {
-        // Первый ребёнок — центрируем
         targetX = (newParent->rect.width - node->rect.width) / 2.0;
         targetY = (newParent->rect.height - node->rect.height) / 2.0;
         if (targetX < 2) targetX = 2;
         if (targetY < 2) targetY = 2;
     } else {
-        // Вычисляем bounding box существующих детей
         double maxR = 0, maxB = 0;
         for (const auto& cid : newParent->childrenUuids) {
             auto sib = getNode(cid);
@@ -408,7 +478,6 @@ bool Canvas::transferNode(const std::string& nodeUuid,
         }
     }
 
-    // Clamp to parent bounds (min)
     targetX = std::max(2.0, std::min(targetX, newParent->rect.width - node->rect.width - 2.0));
     targetY = std::max(2.0, std::min(targetY, newParent->rect.height - node->rect.height - 2.0));
     if (targetX < 2.0) targetX = 2.0;
@@ -425,7 +494,8 @@ bool Canvas::transferNode(const std::string& nodeUuid,
         newParent->childrenUuids.push_back(nodeUuid);
     }
 
-    // Expand parent and resolve overlaps
+    markChanged(nodeUuid);
+    markChanged(newParentUuid);
     expandParentToFit(nodeUuid, 5.0);
     resolveOverlaps(newParentUuid);
 
@@ -441,8 +511,6 @@ bool Canvas::transferNode(const std::string& nodeUuid,
     const Viewport& vp, double viewWidth, double viewHeight) const {
 
     std::vector<std::shared_ptr<Node>> result;
-
-    // Viewport bounds in world space, expanded to catch nearby nodes
     double vl = vp.left(viewWidth) - 500;
     double vr = vp.right(viewWidth) + 500;
     double vt = vp.top(viewHeight) - 500;
@@ -480,10 +548,8 @@ std::vector<std::shared_ptr<Node>> Canvas::findNodesInRect(
     double x1, double y1, double x2, double y2) const {
 
     std::vector<std::shared_ptr<Node>> result;
-    double minX = std::min(x1, x2);
-    double maxX = std::max(x1, x2);
-    double minY = std::min(y1, y2);
-    double maxY = std::max(y1, y2);
+    double minX = std::min(x1, x2), maxX = std::max(x1, x2);
+    double minY = std::min(y1, y2), maxY = std::max(y1, y2);
 
     for (const auto& [uuid, node] : nodes_) {
         Rect world = computeWorldRect(uuid);
@@ -514,8 +580,15 @@ std::string Canvas::createConnection(const std::string& fromUuid,
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
     modifiedAt = now;
+    markCanvasChanged();
     notifyChanged();
     return connUuid;
+}
+
+void Canvas::insertConnection(const std::string& uuid, std::shared_ptr<Connection> connection) {
+    if (!connection) return;
+    connection->uuid = uuid;
+    connections_[uuid] = connection;
 }
 
 bool Canvas::removeConnection(const std::string& connUuid) {
@@ -527,6 +600,7 @@ bool Canvas::removeConnection(const std::string& connUuid) {
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
     modifiedAt = now;
+    markCanvasChanged();
     notifyChanged();
     return true;
 }
@@ -557,9 +631,8 @@ bool Canvas::promoteNode(const std::string& uuid) {
     if (it == nodes_.end()) return false;
 
     Node* node = it->second.get();
-    if (node->zoomLevel <= 0) return true; // Already at top
+    if (node->zoomLevel <= 0) return true;
 
-    // Remove from parent's children
     if (!node->parentId.empty()) {
         auto parentIt = nodes_.find(node->parentId);
         if (parentIt != nodes_.end()) {
@@ -567,12 +640,13 @@ bool Canvas::promoteNode(const std::string& uuid) {
             children.erase(
                 std::remove(children.begin(), children.end(), uuid),
                 children.end());
+            markChanged(parentIt->first);
         }
     }
 
-    // Set new level and parent
     node->zoomLevel--;
-    node->parentId = ""; // Move to root level of its parent's level
+    node->parentId = "";
+    markChanged(uuid);
 
     auto now = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::seconds>(
@@ -592,7 +666,6 @@ bool Canvas::demoteNode(const std::string& uuid,
 
     Node* node = it->second.get();
 
-    // Remove from old parent
     if (!node->parentId.empty() && node->parentId != newParentUuid) {
         auto oldParentIt = nodes_.find(node->parentId);
         if (oldParentIt != nodes_.end()) {
@@ -600,10 +673,10 @@ bool Canvas::demoteNode(const std::string& uuid,
             children.erase(
                 std::remove(children.begin(), children.end(), uuid),
                 children.end());
+            markChanged(oldParentIt->first);
         }
     }
 
-    // Add to new parent
     node->parentId = newParentUuid;
     node->zoomLevel = parentIt->second->zoomLevel + 1;
 
@@ -612,6 +685,9 @@ bool Canvas::demoteNode(const std::string& uuid,
         == parentIt->second->childrenUuids.end()) {
         parentIt->second->childrenUuids.push_back(uuid);
     }
+
+    markChanged(uuid);
+    markChanged(newParentUuid);
 
     auto now = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::seconds>(
@@ -625,6 +701,7 @@ void Canvas::setNodeLevel(const std::string& uuid, int level) {
     auto it = nodes_.find(uuid);
     if (it != nodes_.end()) {
         it->second->zoomLevel = level;
+        markChanged(uuid);
 
         auto now = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::seconds>(
@@ -656,7 +733,6 @@ std::string Canvas::createFrame(const std::vector<std::string>& nodeUuids,
         }
     }
 
-    // Create frame node with padding
     double padding = 10.0;
     Rect frameRect;
     frameRect.x = minX - padding;
@@ -670,13 +746,15 @@ std::string Canvas::createFrame(const std::vector<std::string>& nodeUuids,
         if (frameNode) {
             frameNode->hasFrame = true;
             frameNode->childrenUuids = nodeUuids;
-            // Set parent of children to frame
             for (const auto& uuid : nodeUuids) {
                 auto childIt = nodes_.find(uuid);
                 if (childIt != nodes_.end()) {
                     childIt->second->parentId = frameUuid;
+                    markChanged(uuid);
                 }
             }
+            markChanged(frameUuid);
+            markCanvasChanged();
         }
     }
 
@@ -688,13 +766,11 @@ std::string Canvas::createFrame(const std::vector<std::string>& nodeUuids,
 // ====================================================================
 
 void Canvas::autoLayout() {
-    // 1. Expand all parents to fit children (bottom-up: deepest first)
     {
         std::vector<std::string> ordered;
         for (const auto& [uuid, node] : nodes_) {
             if (!node->parentId.empty()) ordered.push_back(uuid);
         }
-        // Сортируем по zoomLevel descending - deepest first
         std::sort(ordered.begin(), ordered.end(), [this](const std::string& a, const std::string& b) {
             auto na = getNode(a), nb = getNode(b);
             return na->zoomLevel > nb->zoomLevel;
@@ -704,7 +780,6 @@ void Canvas::autoLayout() {
         }
     }
 
-    // 2. Resolve overlaps for all parents (top-down: shallowest first)
     {
         std::vector<std::string> parents;
         for (const auto& [uuid, node] : nodes_) {
@@ -713,7 +788,6 @@ void Canvas::autoLayout() {
                     parents.push_back(uuid);
             }
         }
-        // Сортируем по zoomLevel ascending - shallowest first
         std::sort(parents.begin(), parents.end(), [this](const std::string& a, const std::string& b) {
             auto na = getNode(a), nb = getNode(b);
             return na->zoomLevel < nb->zoomLevel;
@@ -722,15 +796,7 @@ void Canvas::autoLayout() {
             resolveOverlaps(parentId);
         }
     }
-}
-
-void Canvas::notifyChanged() {
-    if (changed_) changed_();
-}
-
-void Canvas::notifyChanged(const std::string& uuid) {
-    if (changed_) changed_();
-    if (nodeChanged_) nodeChanged_(uuid);
+    notifyChanged();
 }
 
 Rect Canvas::computeWorldRect(const std::string& uuid) const {
@@ -739,11 +805,9 @@ Rect Canvas::computeWorldRect(const std::string& uuid) const {
     const Node* node = it->second.get();
 
     if (node->parentId.empty()) {
-        // Root node — coordinates are already in world space
         return node->rect;
     }
 
-    // Walk up to parent, compute parent's world rect, then add relative offset
     auto parentIt = nodes_.find(node->parentId);
     if (parentIt == nodes_.end()) return node->rect;
 

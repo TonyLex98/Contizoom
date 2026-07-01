@@ -89,6 +89,8 @@ static void scanDirIntoCanvas(Canvas& c, const fs::path& dirPath, const std::str
 }
 
 static void loadDemoFromDir(Canvas& c, const std::string& demoDir) {
+    c.clear();
+
     if (!fs::exists(demoDir) || !fs::is_directory(demoDir)) {
         createDemoFiles(demoDir);
     }
@@ -104,6 +106,20 @@ static void loadDemoFromDir(Canvas& c, const std::string& demoDir) {
 
     try { scanDirIntoCanvas(c, demoDir, root, 1); } catch (...) {}
     c.autoLayout();
+}
+
+static bool demoHasDuplicateRoots(const Canvas& c, const std::string& demoDir) {
+    std::string rootName = fs::path(demoDir).filename().u8string();
+    int matchingRoots = 0;
+
+    for (const auto& [_, node] : c.allNodes()) {
+        if (!node->parentId.empty()) continue;
+        if (node->name == rootName || node->text.find("File system view") != std::string::npos) {
+            matchingRoots++;
+        }
+    }
+
+    return matchingRoots > 1;
 }
 
 int main(int argc, char* argv[]) {
@@ -146,12 +162,16 @@ int main(int argc, char* argv[]) {
         std::string demoDir = (exeDir / "demo_project").u8string();
         std::string savedPath = (exeDir / "demo.canvas").u8string();
 
-        if (fs::exists(savedPath + "/manifest.json")) {
+        if (fs::exists(savedPath + "/config.json")) {
             // Load saved project
             if (app.openProject(savedPath).empty()) {
                 std::cerr << "Failed to load saved demo, recreating...\n";
                 app.createProject("File System Demo");
                 loadDemoFromDir(*app.canvas(), demoDir);
+                app.saveAs(savedPath);
+            } else if (app.canvas() && demoHasDuplicateRoots(*app.canvas(), demoDir)) {
+                loadDemoFromDir(*app.canvas(), demoDir);
+                app.saveAs(savedPath);
             }
         } else {
             // First run: create from files and save

@@ -137,6 +137,8 @@ void App::run() {
     renderOnce();
 
     while (running_) {
+        projectManager_->processAutoSave();
+
         auto resizeOpt = input.pollResize();
         if (resizeOpt) {
             w = resizeOpt->width;
@@ -189,6 +191,7 @@ void App::run() {
 }
 
 bool App::processFrame() {
+    projectManager_->processAutoSave();
     renderOnce();
     if (onFrame_) onFrame_(*this);
     return running_;
@@ -219,6 +222,7 @@ void App::zoomToNode(const std::string& uuid) {
     c->viewport_.centerX = world.x + world.width / 2.0;
     c->viewport_.centerY = world.y + world.height / 2.0;
     c->viewport_.zoomLevel = node->zoomLevel;
+    c->markCanvasChanged();
     renderOnce();
 }
 
