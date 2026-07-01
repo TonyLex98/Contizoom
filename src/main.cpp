@@ -3,118 +3,90 @@
 #include "model/canvas.h"
 #include "version/version.h"
 #include <iostream>
-#include <fstream>
 #include <filesystem>
-#include <algorithm>
-#include <vector>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 namespace fs = std::filesystem;
 
 using namespace ic;
 
-static void createDemoFiles(const std::string& base) {
-    auto mk = [](const std::string& p) { fs::create_directories(p); };
-    auto wf = [](const std::string& p, const std::string& c) {
-        std::ofstream(p).write(c.data(), static_cast<std::streamsize>(c.size()));
-    };
-
-    mk(base + "/Design");
-    mk(base + "/Code");
-    mk(base + "/Tests/unit");
-    mk(base + "/Tests/integr");
-    mk(base + "/Docs");
-
-    wf(base + "/README.md", "## Project Root\n\nMain architecture documentation.");
-    wf(base + "/Design/README.md", "# Design\nDesign documentation.");
-    wf(base + "/Design/UI_spec.md", "# UI Spec\nUser interface specification.");
-    wf(base + "/Design/API_spec.md", "# API Spec\nAPI specification.");
-    wf(base + "/Code/main.cpp", "#include <iostream>\nint main() { return 0; }");
-    wf(base + "/Code/utils.cpp", "#include \"utils.h\"\n// Utility functions");
-    wf(base + "/Tests/unit/README.md", "# Unit Tests");
-    wf(base + "/Tests/integr/README.md", "# Integration Tests");
-    wf(base + "/Docs/README.md", "# Docs\nDocumentation");
+// Directory the running executable actually lives in. Unlike
+// fs::current_path(), this doesn't change with the caller's working
+// directory, so the demo project/canvas always resolve to the same place
+// instead of spawning a fresh copy every time the exe is launched from
+// a different folder.
+static fs::path getExecutableDir() {
+    wchar_t buf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return fs::current_path();
+    return fs::path(buf).parent_path();
 }
 
-static std::string basenameStr(const fs::path& p) {
-    std::string bn = p.has_filename() ? p.filename().u8string() : "";
-    if (!bn.empty()) {
-        auto dot = bn.find('.');
-        if (dot != std::string::npos) bn.erase(dot);
-    }
-    return bn.empty() ? "item" : bn;
+static const char* kDemoRootName = "demo_project";
+
+static std::string addDemoFolder(Canvas& c, const std::string& parentUuid, int level,
+                                  const std::string& name, int childCount) {
+    std::string text = "{" + std::to_string(childCount) + " items";
+    return c.createNode(text, Rect{1, 1, 15, 3}, name, parentUuid, level);
 }
 
-static std::string scanFirstLines(const fs::path& p, int maxLines = 3) {
-    std::string res;
-    if (fs::is_regular_file(p)) {
-        std::ifstream ifs(p);
-        std::string line;
-        int n = 0;
-        while (std::getline(ifs, line) && n < maxLines) {
-            if (!res.empty()) res += "\n";
-            if (static_cast<int>(res.size()) + static_cast<int>(line.size()) > 200) break;
-            res += line; n++;
-        }
-    }
-    return res.empty() ? std::string(p.u8string()) : res;
+static void addDemoFile(Canvas& c, const std::string& parentUuid, int level,
+                         const std::string& name, const std::string& text) {
+    c.createNode(text, Rect{1, 1, 15, 3}, name, parentUuid, level);
 }
 
-static void scanDirIntoCanvas(Canvas& c, const fs::path& dirPath, const std::string& parentUuid, int level) {
-    std::vector<std::pair<std::string, bool>> entries;
-    try {
-        for (const auto& e : fs::directory_iterator(dirPath)) {
-            entries.emplace_back(e.path().filename().u8string(), e.is_directory());
-        }
-    } catch (...) { return; }
-
-    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
-        if (a.second != b.second) return a.second;
-        return a.first < b.first;
-    });
-
-    for (const auto& [name, isDir] : entries) {
-        auto fp = dirPath / name;
-        std::string bn = basenameStr(fp);
-        std::string display = isDir ? bn : name;
-        std::string text = isDir ? std::string("{") + std::to_string(entries.size()) + std::string(" items") : scanFirstLines(fp);
-
-        Rect r{1, 1, 15, 3};
-        if (!isDir && text.size() > 20) r.height = 3;
-        std::string uuid = c.createNode(text, r, display, parentUuid, level);
-
-        if (isDir) {
-            try { scanDirIntoCanvas(c, fp, uuid, level + 1); } catch (...) {}
-        }
-    }
-}
-
-static void loadDemoFromDir(Canvas& c, const std::string& demoDir) {
+// Builds the sample "file system view" project directly as canvas nodes.
+// Nothing touches disk here - the demo used to write real .md files and
+// scan them back in just to populate this same tree, which meant every
+// launch from a new working directory left stray demo_project/ folders
+// lying around. The canvas itself is the only storage that matters; it's
+// persisted as JSON via app.saveAs() right after this runs.
+static void buildDemoCanvas(Canvas& c) {
     c.clear();
-
-    if (!fs::exists(demoDir) || !fs::is_directory(demoDir)) {
-        createDemoFiles(demoDir);
-    }
-
-    c.canvasName = fs::path(demoDir).filename().u8string();
+    c.canvasName = kDemoRootName;
     c.viewport_.centerX = 60;
     c.viewport_.centerY = 15;
     c.viewport_.textScale = 1.0;
 
-    std::string root = c.createNode(
-        fs::path(demoDir).filename().u8string() + "\nFile system view",
-        Rect{5, 2, 100, 30}, fs::path(demoDir).filename().u8string(), "", 0);
+    std::string root = c.createNode(std::string(kDemoRootName) + "\nFile system view",
+                                     Rect{5, 2, 100, 30}, kDemoRootName, "", 0);
 
-    try { scanDirIntoCanvas(c, demoDir, root, 1); } catch (...) {}
+    std::string code = addDemoFolder(c, root, 1, "Code", 2);
+    addDemoFile(c, code, 2, "main.cpp", "#include <iostream>\nint main() { return 0; }");
+    addDemoFile(c, code, 2, "utils.cpp", "#include \"utils.h\"\n// Utility functions");
+
+    std::string design = addDemoFolder(c, root, 1, "Design", 3);
+    addDemoFile(c, design, 2, "API_spec.md", "# API Spec\nAPI specification.");
+    addDemoFile(c, design, 2, "overview.md", "# Design\nDesign documentation.");
+    addDemoFile(c, design, 2, "UI_spec.md", "# UI Spec\nUser interface specification.");
+
+    std::string docs = addDemoFolder(c, root, 1, "Docs", 1);
+    addDemoFile(c, docs, 2, "guide.md", "# Docs\nDocumentation");
+
+    std::string tests = addDemoFolder(c, root, 1, "Tests", 2);
+    std::string integr = addDemoFolder(c, tests, 2, "integr", 1);
+    addDemoFile(c, integr, 3, "scenarios.md", "# Integration Tests");
+    std::string unit = addDemoFolder(c, tests, 2, "unit", 1);
+    addDemoFile(c, unit, 3, "coverage.md", "# Unit Tests");
+
+    // Only one README.md in the whole demo - the real project root, matching
+    // how actual projects are laid out. Every other file has its own name so
+    // the canvas doesn't show five identically-labeled boxes.
+    addDemoFile(c, root, 1, "README.md", "## Project Root\n\nMain architecture documentation.");
+
     c.autoLayout();
 }
 
-static bool demoHasDuplicateRoots(const Canvas& c, const std::string& demoDir) {
-    std::string rootName = fs::path(demoDir).filename().u8string();
+static bool demoHasDuplicateRoots(const Canvas& c) {
     int matchingRoots = 0;
 
     for (const auto& [_, node] : c.allNodes()) {
         if (!node->parentId.empty()) continue;
-        if (node->name == rootName || node->text.find("File system view") != std::string::npos) {
+        if (node->name == kDemoRootName || node->text.find("File system view") != std::string::npos) {
             matchingRoots++;
         }
     }
@@ -157,9 +129,8 @@ int main(int argc, char* argv[]) {
         }
     }
     else {
-        // Demo: load from saved file or create from demo_project/
-        fs::path exeDir = fs::current_path();
-        std::string demoDir = (exeDir / "demo_project").u8string();
+        // Demo: load the previously saved JSON canvas, or build it once in memory.
+        fs::path exeDir = getExecutableDir();
         std::string savedPath = (exeDir / "demo.canvas").u8string();
 
         if (fs::exists(savedPath + "/config.json")) {
@@ -167,16 +138,17 @@ int main(int argc, char* argv[]) {
             if (app.openProject(savedPath).empty()) {
                 std::cerr << "Failed to load saved demo, recreating...\n";
                 app.createProject("File System Demo");
-                loadDemoFromDir(*app.canvas(), demoDir);
+                buildDemoCanvas(*app.canvas());
                 app.saveAs(savedPath);
-            } else if (app.canvas() && demoHasDuplicateRoots(*app.canvas(), demoDir)) {
-                loadDemoFromDir(*app.canvas(), demoDir);
+            } else if (app.canvas() && demoHasDuplicateRoots(*app.canvas())) {
+                app.canvas()->clear();
+                buildDemoCanvas(*app.canvas());
                 app.saveAs(savedPath);
             }
         } else {
-            // First run: create from files and save
+            // First run: build the demo canvas and save it as JSON
             app.createProject("File System Demo");
-            loadDemoFromDir(*app.canvas(), demoDir);
+            buildDemoCanvas(*app.canvas());
             app.saveAs(savedPath);
         }
     }

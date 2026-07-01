@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <set>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -19,6 +20,30 @@
 #include <windows.h>
 
 namespace ic {
+
+// Full box: large enough for a bordered box with its name label.
+static bool shouldDrawNodeBox(const ScreenRect& sr) {
+    return sr.w >= 4.0 && sr.h >= 2.0;
+}
+
+// Compact box: too small for a name label, but still large enough for
+// drawNodeAt to render real borders (matches its own w<2||h<2 dot cutoff).
+// Nodes in this range must NOT be collapsed to a single-cell marker - they
+// have real, distinct screen area and should keep it.
+static bool canRenderAsBox(const ScreenRect& sr) {
+    return sr.w >= 2.0 && sr.h >= 2.0;
+}
+
+// Integer right/bottom edge as floor(x+w), NOT floor(x)+floor(w). A box's
+// own drawn width must be derived the same way its children's containment
+// was checked against it (computeScreenRect clamps children against the
+// float edge x+w) - otherwise the two disagree by up to a cell and a child
+// that was correctly kept inside the parent in float space ends up drawn
+// past the parent's actual last row/column once both are rounded down
+// independently.
+static int floorEdge(double origin, double extent) {
+    return static_cast<int>(std::floor(origin + extent));
+}
 
 ConsoleRenderer::ConsoleRenderer() {
     hOut_ = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -71,17 +96,32 @@ ScreenRect ConsoleRenderer::computeScreenRect(const Node* node, const Canvas& ca
         double relW = pw > 0 ? node->rect.width / pw : 0.1;
         double relH = ph > 0 ? node->rect.height / ph : 0.2;
 
-        // Clamp to parent bounds
-        relX = std::max(0.02, std::min(relX, 0.98));
-        relY = std::max(0.02, std::min(relY, 0.98));
-        relW = std::max(0.05, std::min(relW, 0.98 - relX));
-        relH = std::max(0.05, std::min(relH, 0.98 - relY));
-
         ScreenRect sr;
         sr.x = parentSr.x + relX * parentSr.w;
         sr.y = parentSr.y + relY * parentSr.h;
         sr.w = relW * parentSr.w;
         sr.h = relH * parentSr.h;
+
+        // Clamp strictly inside the parent's own rendered box (inset by its
+        // 1-char border). The parent's box and a child's position each get
+        // cast to integer character cells independently and with different
+        // rounding (floor for box dimensions, round() for point markers) -
+        // without this, a child positioned near the parent's edge can drift
+        // past the parent's border once both are rounded, and the drift
+        // compounds across nested levels of parent/child.
+        double innerX0 = parentSr.x + 1.0;
+        double innerY0 = parentSr.y + 1.0;
+        double innerX1 = parentSr.x + parentSr.w - 1.0;
+        double innerY1 = parentSr.y + parentSr.h - 1.0;
+        if (innerX1 > innerX0 && innerY1 > innerY0) {
+            sr.x = std::min(std::max(sr.x, innerX0), innerX1);
+            sr.y = std::min(std::max(sr.y, innerY0), innerY1);
+            sr.w = std::min(sr.w, innerX1 - sr.x);
+            sr.h = std::min(sr.h, innerY1 - sr.y);
+        }
+        sr.w = std::max(0.0, sr.w);
+        sr.h = std::max(0.0, sr.h);
+
         screenRects_[node->uuid] = sr;
         return sr;
     }
@@ -99,8 +139,8 @@ ScreenRect ConsoleRenderer::computeScreenRect(const Node* node, const Canvas& ca
     double cx = canvasArea_.centerX();
     double cy = canvasArea_.centerY();
     ScreenRect sr;
-    sr.x = (world.x - vp.centerX) * scale + cx;
-    sr.y = (world.y - vp.centerY) * scale + cy;
+    sr.x = (world.x - vp.centerX) * vp.textScale + cx;
+    sr.y = (world.y - vp.centerY) * vp.textScale + cy;
     sr.w = world.width * scale;
     sr.h = world.height * scale;
     screenRects_[node->uuid] = sr;
@@ -130,8 +170,123 @@ void ConsoleRenderer::render(const Canvas& canvas) {
         return a->zoomLevel < b->zoomLevel;
     });
 
+    auto markerCell = [](const ScreenRect& sr) {
+        return std::pair<int, int>{
+            static_cast<int>(std::round(sr.centerX())),
+            static_cast<int>(std::round(sr.centerY()))
+        };
+    };
+
+    auto markerVisible = [&](const ScreenRect& sr) {
+        auto [x, y] = markerCell(sr);
+        return canvasArea_.contains(x, y);
+    };
+
+    // A node's children are only drawn individually if the node itself opened
+    // up into a full labeled box AND actually has interior room for them -
+    // a 4x2 box clears shouldDrawNodeBox but is just a header+footer with
+    // zero content rows, so anything clamped "inside" it is squeezed to
+    // nothing and drifts onto or past its border anyway. If a folder is
+    // still collapsed down to a compact box, a dot, or a box with no real
+    // interior, there is no room to also show its contents without every
+    // level of the hierarchy overlapping into unreadable noise - the
+    // folder's own (possibly tiny) marker stands in for its whole subtree
+    // until you zoom in enough for it to become a full box itself. sorted is
+    // ascending by zoomLevel, so parents are always visited before children.
+    std::set<std::string> boxNodes;         // full box + name label
+    std::set<std::string> compactNodes;     // small but real box, no name label
+    std::set<std::string> canHostChildren;  // full box AND has real interior space
+    for (const auto* node : sorted) {
+        bool parentEligible = node->parentId.empty() || canHostChildren.count(node->parentId) > 0;
+        if (!parentEligible) continue;
+
+        auto it = screenRects_.find(node->uuid);
+        if (it == screenRects_.end()) continue;
+        const ScreenRect& sr = it->second;
+        if (shouldDrawNodeBox(sr)) {
+            boxNodes.insert(node->uuid);
+            int ox = static_cast<int>(std::floor(sr.x));
+            int oy = static_cast<int>(std::floor(sr.y));
+            int ex = floorEdge(sr.x, sr.w);
+            int ey = floorEdge(sr.y, sr.h);
+            if (ex - ox >= 3 && ey - oy >= 3) {
+                canHostChildren.insert(node->uuid);
+            }
+        } else if (canRenderAsBox(sr)) {
+            compactNodes.insert(node->uuid);
+        }
+    }
+
+    // Boxes and compact boxes occupy real, distinct screen area and are always
+    // drawn as-is. Only genuine point-sized nodes (below canRenderAsBox) are
+    // small enough that several of them can round to the same screen cell -
+    // those compete for that single cell below.
+    std::set<std::string> drawnNodes = boxNodes;
+    drawnNodes.insert(compactNodes.begin(), compactNodes.end());
+
+    std::map<std::pair<int, int>, int> markerCellCounts;
+    std::map<std::pair<int, int>, std::string> markerCellOwner;
+    for (auto rit = sorted.rbegin(); rit != sorted.rend(); ++rit) {
+        const auto* node = *rit;
+        if (drawnNodes.count(node->uuid)) continue;
+        // Same rule as boxes/compact boxes: a node whose parent has no real
+        // interior room doesn't get its own dot either - the collapsed
+        // ancestor already represents it.
+        bool parentEligible = node->parentId.empty() || canHostChildren.count(node->parentId) > 0;
+        if (!parentEligible) continue;
+        auto it = screenRects_.find(node->uuid);
+        if (it == screenRects_.end() || !it->second.valid() || !markerVisible(it->second)) continue;
+
+        auto cell = markerCell(it->second);
+        int& count = markerCellCounts[cell];
+        count++;
+        if (count == 1) {
+            markerCellOwner[cell] = node->uuid;
+            drawnNodes.insert(node->uuid);
+        }
+    }
+    // Cells where 2+ nodes collapsed onto the same point: render distinctly
+    // (a cluster marker) instead of quietly showing one node's ordinary dot
+    // as if nothing else were there.
+    std::set<std::string> clusterNodes;
+    for (const auto& [cell, count] : markerCellCounts) {
+        if (count > 1) clusterNodes.insert(markerCellOwner[cell]);
+    }
+    for (const auto& uuid : drawnNodes) {
+        if (boxNodes.count(uuid) || compactNodes.count(uuid)) continue;
+        auto it = screenRects_.find(uuid);
+        if (it == screenRects_.end()) continue;
+        auto [x, y] = markerCell(it->second);
+
+        // markerCell rounds to the nearest cell, but a box's own edges are
+        // floored (floorEdge) - near an edge those two can disagree by a
+        // cell, which would let a dot land on or past its own parent's
+        // border. Clamp it back inside the parent's drawn interior.
+        auto n = canvas.getNode(uuid);
+        if (n && !n->parentId.empty()) {
+            auto pit = screenRects_.find(n->parentId);
+            if (pit != screenRects_.end()) {
+                const ScreenRect& psr = pit->second;
+                int px0 = static_cast<int>(std::floor(psr.x)) + 1;
+                int py0 = static_cast<int>(std::floor(psr.y)) + 1;
+                int px1 = floorEdge(psr.x, psr.w) - 2;
+                int py1 = floorEdge(psr.y, psr.h) - 2;
+                if (px1 >= px0) x = std::min(std::max(x, px0), px1);
+                if (py1 >= py0) y = std::min(std::max(y, py0), py1);
+            }
+        }
+
+        it->second = ScreenRect{
+            static_cast<double>(x),
+            static_cast<double>(y),
+            1.0,
+            1.0
+        };
+    }
+
     // Connections first
     for (const auto& [_, conn] : canvas.allConnections()) {
+        if (!boxNodes.count(conn->fromUuid) || !boxNodes.count(conn->toUuid)) continue;
         auto fromIt = screenRects_.find(conn->fromUuid);
         auto toIt = screenRects_.find(conn->toUuid);
         if (fromIt != screenRects_.end() && toIt != screenRects_.end()) {
@@ -141,9 +296,9 @@ void ConsoleRenderer::render(const Canvas& canvas) {
 
     // Nodes
     for (const auto* node : sorted) {
-        auto it = screenRects_.find(node->uuid);
-        if (it != screenRects_.end()) {
-            drawNodeAt(*node, it->second, vw, vh);
+        if (drawnNodes.count(node->uuid)) {
+            auto it = screenRects_.find(node->uuid);
+            drawNodeAt(*node, it->second, vw, vh, clusterNodes.count(node->uuid) > 0);
         }
     }
 
@@ -164,14 +319,20 @@ void ConsoleRenderer::render(const Canvas& canvas) {
     for (auto rit = sorted.rbegin(); rit != sorted.rend(); ++rit) {
         const auto* node = *rit;
         if (node->name.empty()) continue;
+        if (canvas.editOverlay_.active &&
+            canvas.editOverlay_.editingName &&
+            canvas.editOverlay_.nodeUuid == node->uuid) {
+            continue;
+        }
         auto sit = screenRects_.find(node->uuid);
         if (sit == screenRects_.end()) continue;
         const auto& sr = sit->second;
-        int ox = static_cast<int>(sr.x);
-        int oy = static_cast<int>(sr.y);
-        int w = static_cast<int>(sr.w);
-        int h = static_cast<int>(sr.h);
-        if (w < 4 || h < 2) continue;
+        if (!boxNodes.count(node->uuid) && !compactNodes.count(node->uuid)) continue;
+        int ox = static_cast<int>(std::floor(sr.x));
+        int oy = static_cast<int>(std::floor(sr.y));
+        int w = floorEdge(sr.x, sr.w) - ox;
+        int h = floorEdge(sr.y, sr.h) - oy;
+        if (w < 2 || h < 2) continue;
 
         // Count display characters (UTF-8 aware)
         int displayChars = 0;
@@ -220,6 +381,15 @@ void ConsoleRenderer::render(const Canvas& canvas) {
         }
     }
 
+    for (auto it = screenRects_.begin(); it != screenRects_.end(); ) {
+        if (!drawnNodes.count(it->first) &&
+            !(canvas.editOverlay_.active && canvas.editOverlay_.nodeUuid == it->first)) {
+            it = screenRects_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     flush();
 }
 
@@ -249,23 +419,59 @@ void ConsoleRenderer::putAttr(int x, int y, uint16_t attr) {
         buffer_[y * viewWidth_ + x].attr = attr;
 }
 
-void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw, int vh) {
+void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw, int vh, bool isCluster) {
     if (!sr.valid()) return;
 
-    int ox = static_cast<int>(sr.x);
-    int oy = static_cast<int>(sr.y);
-    int w = static_cast<int>(sr.w);
-    int h = static_cast<int>(sr.h);
+    int ox = static_cast<int>(std::floor(sr.x));
+    int oy = static_cast<int>(std::floor(sr.y));
+    int w = floorEdge(sr.x, sr.w) - ox;
+    int h = floorEdge(sr.y, sr.h) - oy;
 
-    // Dot mode: too small for a box
+    // Dot mode: too small for a box. Still a real, visible marker - a dim,
+    // near-black glyph here made isolated small nodes indistinguishable from
+    // empty canvas.
     if (w < 2 || h < 2) {
-        char dot = node.state == NodeState::Selected ? '#' :
-                   node.state == NodeState::Hovered ? '~' : '.';
-        uint16_t attr = 7;
-        if (node.state == NodeState::Selected) attr = 0x0F;
+        char dot = isCluster ? '*' :
+                   node.state == NodeState::Selected ? '#' :
+                   node.state == NodeState::Hovered ? '~' : '+';
+        uint16_t attr = node.childrenUuids.empty() ? 0x07 : 0x09;
+        if (isCluster) attr = 0x0E;
+        else if (node.state == NodeState::Selected) attr = 0x0F;
         else if (node.state == NodeState::Hovered) attr = 0x0A;
-        putChar(static_cast<int>(sr.centerX()), static_cast<int>(sr.centerY()), dot);
-        putAttr(static_cast<int>(sr.centerX()), static_cast<int>(sr.centerY()), attr);
+        int cx = static_cast<int>(sr.centerX());
+        int cy = static_cast<int>(sr.centerY());
+        putChar(cx, cy, dot);
+        putAttr(cx, cy, attr);
+
+        // Best-effort label: a single collapsed node with a name shouldn't
+        // look like an empty patch of canvas just because it has no room for
+        // a box. Print as much of the name as fits into the blank space
+        // immediately to its right. Cluster markers skip this - the name of
+        // one arbitrary member would be misleading for a merged cell.
+        if (!isCluster && !node.name.empty()) {
+            int px = cx + 1;
+            size_t i = 0;
+            int written = 0;
+            while (i < node.name.size() && written < 24 && px < vw &&
+                   canvasArea_.contains(px, cy) &&
+                   buffer_[cy * viewWidth_ + px].ch == L' ') {
+                unsigned char b = static_cast<unsigned char>(node.name[i]);
+                wchar_t ch;
+                if (b < 0x80) { ch = b; i += 1; }
+                else if (b < 0xE0 && i + 1 < node.name.size()) {
+                    ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(node.name[i + 1]) & 0x3F);
+                    i += 2;
+                } else if (i + 2 < node.name.size()) {
+                    ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(node.name[i + 1]) & 0x3F) << 6) |
+                         (static_cast<unsigned char>(node.name[i + 2]) & 0x3F);
+                    i += 3;
+                } else { ch = b; i += 1; }
+                putChar(px, cy, ch);
+                putAttr(px, cy, 0x07);
+                px++;
+                written++;
+            }
+        }
         return;
     }
 
@@ -446,10 +652,112 @@ void ConsoleRenderer::drawEditOverlay(const EditOverlay& overlay, int vw, int vh
     int oy = static_cast<int>(sr.y);
     int w = static_cast<int>(sr.w);
     int h = static_cast<int>(sr.h);
+    if (overlay.nodeRect.width > 0) {
+        w = std::max(w, static_cast<int>(std::round(overlay.nodeRect.width)));
+    }
+    if (overlay.nodeRect.height > 0) {
+        h = std::max(h, static_cast<int>(std::round(overlay.nodeRect.height)));
+    }
     if (w < 3) w = 3;
     if (h < 2) h = 2;
+    screenRects_[overlay.nodeUuid] = ScreenRect{
+        static_cast<double>(ox),
+        static_cast<double>(oy),
+        static_cast<double>(w),
+        static_cast<double>(h)
+    };
 
     uint16_t editAttr = 0x0F;
+
+    if (overlay.editingName) {
+        for (int y = oy; y < oy + h; y++) {
+            for (int x = ox; x < ox + w; x++) {
+                if (x >= 0 && x < vw && y >= 0 && y < vh) {
+                    putChar(x, y, ' ');
+                    putAttr(x, y, editAttr);
+                }
+            }
+        }
+
+        for (int x = ox; x < ox + w; x++) {
+            if (x >= 0 && x < vw) {
+                if (oy >= 0 && oy < vh) {
+                    putChar(x, oy, x == ox || x == ox + w - 1 ? '+' : '=');
+                    putAttr(x, oy, editAttr);
+                }
+                int by = oy + h - 1;
+                if (by >= 0 && by < vh && by != oy) {
+                    putChar(x, by, x == ox || x == ox + w - 1 ? '+' : '~');
+                    putAttr(x, by, editAttr);
+                }
+            }
+        }
+        for (int y = oy + 1; y < oy + h - 1; y++) {
+            if (y >= 0 && y < vh) {
+                if (ox >= 0 && ox < vw) {
+                    putChar(ox, y, ':');
+                    putAttr(ox, y, editAttr);
+                }
+                int rx = ox + w - 1;
+                if (rx >= 0 && rx < vw && rx != ox) {
+                    putChar(rx, y, ':');
+                    putAttr(rx, y, editAttr);
+                }
+            }
+        }
+
+        int displayChars = 0;
+        std::vector<int> charBytes;
+        for (size_t i = 0; i < overlay.text.size();) {
+            unsigned char b = static_cast<unsigned char>(overlay.text[i]);
+            charBytes.push_back(static_cast<int>(i));
+            if (b < 0x80) i += 1;
+            else if (b < 0xE0) i += 2;
+            else i += 3;
+            displayChars++;
+        }
+
+        int innerW = std::max(1, w - 2);
+        int nameStartChar = (innerW - displayChars) / 2;
+        if (nameStartChar < 0) nameStartChar = 0;
+        int drawChars = std::min(innerW - nameStartChar, displayChars);
+
+        for (int cx = 0; cx < drawChars; cx++) {
+            int bytePos = charBytes[cx];
+            unsigned char b = static_cast<unsigned char>(overlay.text[bytePos]);
+            wchar_t ch;
+            if (b < 0x80) ch = b;
+            else if (b < 0xE0 && bytePos + 1 < static_cast<int>(overlay.text.size())) {
+                ch = ((b & 0x1F) << 6) |
+                     (static_cast<unsigned char>(overlay.text[bytePos + 1]) & 0x3F);
+            } else if (bytePos + 2 < static_cast<int>(overlay.text.size())) {
+                ch = ((b & 0x0F) << 12) |
+                     ((static_cast<unsigned char>(overlay.text[bytePos + 1]) & 0x3F) << 6) |
+                     (static_cast<unsigned char>(overlay.text[bytePos + 2]) & 0x3F);
+            } else {
+                ch = '?';
+            }
+
+            int px = ox + 1 + nameStartChar + cx;
+            if (px >= 0 && px < vw && oy >= 0 && oy < vh) {
+                putChar(px, oy, ch);
+                putAttr(px, oy, editAttr);
+            }
+        }
+
+        int cursorPx = ox + 1 + nameStartChar + overlay.cursorCol;
+        cursorPx = std::max(ox + 1, std::min(ox + w - 2, cursorPx));
+        if (cursorPx >= 0 && cursorPx < vw && oy >= 0 && oy < vh) {
+            if (buffer_[oy * viewWidth_ + cursorPx].ch != '=' &&
+                buffer_[oy * viewWidth_ + cursorPx].ch != ' ') {
+                buffer_[oy * viewWidth_ + cursorPx].attr = 0xF0;
+            } else {
+                putChar(cursorPx, oy, '_');
+                putAttr(cursorPx, oy, 0xF0);
+            }
+        }
+        return;
+    }
 
     // ---- Render text FIRST, track cursor position ----
     std::istringstream iss(overlay.text);
@@ -542,8 +850,18 @@ void ConsoleRenderer::drawEditOverlay(const EditOverlay& overlay, int vw, int vh
 void ConsoleRenderer::drawHUD(const Viewport& vp, int vw, int vh) {
     uint16_t topAttr = 0x0E, botAttr = 0x08;
 
+    std::ostringstream zoom;
+    zoom.setf(std::ios::fixed);
+    if (vp.textScale >= 0.1) {
+        zoom.precision(0);
+        zoom << vp.textScale * 100.0;
+    } else {
+        zoom.precision(4);
+        zoom << vp.textScale * 100.0;
+    }
+
     std::string top = "Lv:" + std::to_string(vp.zoomLevel) +
-                       " Z:" + std::to_string(static_cast<int>(vp.textScale * 100)) + "%" +
+                       " Z:" + zoom.str() + "%" +
                        " C:(" + std::to_string(static_cast<int>(vp.centerX)) + "," +
                        std::to_string(static_cast<int>(vp.centerY)) + ")";
     for (int x = 0; x < static_cast<int>(top.size()) && x < vw; x++) {

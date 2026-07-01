@@ -88,7 +88,7 @@ private:
 
     ScreenRect computeScreenRect(const Node* node, const Canvas& canvas,
                                    const Viewport& vp, int vw, int vh);
-    void drawNodeAt(const Node& node, const ScreenRect& sr, int vw, int vh);
+    void drawNodeAt(const Node& node, const ScreenRect& sr, int vw, int vh, bool isCluster = false);
     void drawConnectionAt(const Connection* conn, const ScreenRect& from, const ScreenRect& to,
                            int vw, int vh);
     void drawSelection(const Selection& sel, int vw, int vh, const Viewport& vp);
