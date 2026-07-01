@@ -57,6 +57,7 @@ bool JsonStorage::saveCanvas(const Canvas& canvas, const std::string& path) {
 
                 idx << "    {\n";
                 idx << "      \"uuid\": \"" << uuid << "\",\n";
+                idx << "      \"name\": \"" << node->name << "\",\n";
                 idx << "      \"parentId\": \"" << node->parentId << "\",\n";
                 idx << "      \"x\": " << node->rect.x << ",\n";
                 idx << "      \"y\": " << node->rect.y << ",\n";
@@ -80,6 +81,7 @@ bool JsonStorage::saveCanvas(const Canvas& canvas, const std::string& path) {
 
                 idx << "    {\n";
                 idx << "      \"uuid\": \"" << conn->uuid << "\",\n";
+                idx << "      \"name\": \"" << conn->name << "\",\n";
                 idx << "      \"fromUuid\": \"" << conn->fromUuid << "\",\n";
                 idx << "      \"toUuid\": \"" << conn->toUuid << "\",\n";
                 idx << "      \"label\": \"" << conn->label << "\",\n";
@@ -233,12 +235,13 @@ bool JsonStorage::loadCanvas(Canvas& canvas, const std::string& path) {
                     if (!hStr.empty()) rect.height = std::stod(hStr);
 
                     std::string text = loadNodeText(path, uuid);
+                    std::string name = extractField("name", nodeStr);
                     std::string parentId = extractField("parentId", nodeStr);
                     std::string levelStr = extractField("zoomLevel", nodeStr);
                     int level = 0;
                     if (!levelStr.empty()) level = std::stoi(levelStr);
 
-                    canvas.createNode(text, rect, parentId, level);
+                    canvas.createNode(text, rect, name, parentId, level);
 
                     pos = endBrace + 1;
                 }

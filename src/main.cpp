@@ -50,32 +50,32 @@ int main(int argc, char* argv[]) {
 
         // Level 0: root (absolute world coords)
         std::string root = c.createNode(
-            "Project Root\nMain architecture", Rect{15, 3, 90, 24}, "", 0);
+            "Project Root\nMain architecture", Rect{15, 3, 90, 24}, "Root", "", 0);
 
         // Level 1: children of root (relative inside parent: x 0..90, y 0..24)
-        std::string d1 = c.createNode("Design",   Rect{2, 2, 42, 10}, root, 1);
-        std::string d2 = c.createNode("Code",     Rect{46, 2, 42, 10}, root, 1);
-        std::string d3 = c.createNode("Tests",    Rect{2, 14, 42, 8}, root, 1);
-        std::string d4 = c.createNode("Docs",     Rect{46, 14, 42, 8}, root, 1);
+        std::string d1 = c.createNode("Design",   Rect{2, 2, 42, 10}, "Design", root, 1);
+        std::string d2 = c.createNode("Code",     Rect{46, 2, 42, 10}, "Code", root, 1);
+        std::string d3 = c.createNode("Tests",    Rect{2, 14, 42, 8}, "Tests", root, 1);
+        std::string d4 = c.createNode("Docs",     Rect{46, 14, 42, 8}, "Docs", root, 1);
 
         // Level 2: children inside level-1 (relative inside parent)
-        c.createNode("UI spec",   Rect{2, 2, 18, 3}, d1, 2);
-        c.createNode("API spec",  Rect{22, 2, 18, 3}, d1, 2);
-        c.createNode("main.cpp",  Rect{2, 2, 18, 3}, d2, 2);
-        c.createNode("utils.cpp", Rect{22, 2, 18, 3}, d2, 2);
-        c.createNode("unit",      Rect{2, 2, 18, 3}, d3, 2);
-        c.createNode("integr",    Rect{22, 2, 18, 3}, d3, 2);
+        c.createNode("UI spec",   Rect{2, 2, 18, 3}, "UI spec", d1, 2);
+        c.createNode("API spec",  Rect{22, 2, 18, 3}, "API spec", d1, 2);
+        c.createNode("main.cpp",  Rect{2, 2, 18, 3}, "main.cpp", d2, 2);
+        c.createNode("utils.cpp", Rect{22, 2, 18, 3}, "utils.cpp", d2, 2);
+        c.createNode("unit",      Rect{2, 2, 18, 3}, "unit", d3, 2);
+        c.createNode("integr",    Rect{22, 2, 18, 3}, "integr", d3, 2);
 
         // Level 3: children inside Design
-        c.createNode("pages", Rect{4, 4, 8, 2}, d1, 3);
-        c.createNode("ctrl",  Rect{14, 4, 8, 2}, d1, 3);
+        c.createNode("pages", Rect{4, 4, 8, 2}, "pages", d1, 3);
+        c.createNode("ctrl",  Rect{14, 4, 8, 2}, "ctrl", d1, 3);
 
         // Connections
-        c.createConnection(root, d1, ConnType::Arrow);
-        c.createConnection(root, d2, ConnType::Arrow);
-        c.createConnection(root, d3, ConnType::DottedArrow);
-        c.createConnection(root, d4, ConnType::DottedArrow);
-        c.createConnection(d1, d2, ConnType::DashedLine);
+        c.createConnection(root, d1, "Design link", ConnType::Arrow);
+        c.createConnection(root, d2, "Code link", ConnType::Arrow);
+        c.createConnection(root, d3, "Tests link", ConnType::DottedArrow);
+        c.createConnection(root, d4, "Docs link", ConnType::DottedArrow);
+        c.createConnection(d1, d2, "Design-Code", ConnType::DashedLine);
 
         // Auto-layout: expand parents and resolve overlaps
         c.autoLayout();

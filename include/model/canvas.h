@@ -53,7 +53,8 @@ public:
     // ====================================================================
     // Create a new node and return its UUID
     std::string createNode(const std::string& text, const Rect& rect,
-                           const std::string& parentId = "", int level = 0);
+                            const std::string& name = "",
+                            const std::string& parentId = "", int level = 0);
 
     // Remove a node and all its descendants (or just the node)
     bool removeNode(const std::string& uuid, bool recursive = false);
@@ -89,8 +90,9 @@ public:
     // Connection management
     // ====================================================================
     std::string createConnection(const std::string& fromUuid,
-                                  const std::string& toUuid,
-                                  ConnType type = ConnType::Arrow);
+                                   const std::string& toUuid,
+                                   const std::string& name = "",
+                                   ConnType type = ConnType::Arrow);
 
     bool removeConnection(const std::string& connUuid);
 
@@ -156,6 +158,10 @@ public:
     // Get all nodes (for serialization)
     const std::map<std::string, std::shared_ptr<Node>>& allNodes() const { return nodes_; }
     const std::map<std::string, std::shared_ptr<Connection>>& allConnections() const { return connections_; }
+
+    // Compute absolute world rect from relative coordinates
+    // All node.rect values are relative to parent; this walks the chain up to root.
+    Rect computeWorldRect(const std::string& uuid) const;
 
 private:
     std::map<std::string, std::shared_ptr<Node>> nodes_;

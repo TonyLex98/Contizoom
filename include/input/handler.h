@@ -111,6 +111,7 @@ private:
     // Inline text editing
     std::optional<std::string> editingNode_; // UUID of node being edited
     std::string editText_; // Current text being edited
+    bool editingName_ = false; // true = editing node name, false = editing node text
     int editCursorCol_ = 0;
     int editCursorRow_ = 0;
     Rect editNodeRect_; // Original rect for rendering overlay
@@ -144,6 +145,8 @@ private:
     void promoteSelected();
     void demoteSelected();
     void createNodeAtCursor();
+    void renameSelected();
+    void autoCenterViewportOnRoot();
     void startConnection(const std::string& fromUuid);
     void cancelConnection();
 
@@ -152,6 +155,7 @@ private:
 
     // Inline editing
     void startEditing(const std::string& nodeUuid);
+    void startEditingName(const std::string& nodeUuid);
     void handleEditKey(const InputEvent& event);
     void commitEdit();
     void cancelEdit();

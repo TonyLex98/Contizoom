@@ -215,8 +215,9 @@ void App::zoomToNode(const std::string& uuid) {
     if (!c) return;
     auto node = c->getNode(uuid);
     if (!node) return;
-    c->viewport_.centerX = node->rect.x + node->rect.width / 2.0;
-    c->viewport_.centerY = node->rect.y + node->rect.height / 2.0;
+    Rect world = c->computeWorldRect(uuid);
+    c->viewport_.centerX = world.x + world.width / 2.0;
+    c->viewport_.centerY = world.y + world.height / 2.0;
     c->viewport_.zoomLevel = node->zoomLevel;
     renderOnce();
 }

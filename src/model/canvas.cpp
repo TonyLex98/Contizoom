@@ -9,13 +9,15 @@ namespace ic {
 // ====================================================================
 
 std::string Canvas::createNode(const std::string& text, const Rect& rect,
-                               const std::string& parentId, int level) {
+                                const std::string& name,
+                                const std::string& parentId, int level) {
     std::string uuid = Uuid::generate();
     auto now = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
 
     auto node = std::make_shared<Node>(uuid, text, rect, level);
+    node->name = name;
     node->parentId = parentId;
     node->createdAt = now;
     node->modifiedAt = now;
@@ -431,19 +433,18 @@ bool Canvas::transferNode(const std::string& nodeUuid,
 
     std::vector<std::shared_ptr<Node>> result;
 
-    // Fractal zoom: all nodes are visible, scaled by depth difference.
-    // Compute expanded viewport bounds to include nodes at other zoom levels
-    // (child nodes near parent are always nearby in logical space)
+    // Viewport bounds in world space, expanded to catch nearby nodes
     double vl = vp.left(viewWidth) - 500;
     double vr = vp.right(viewWidth) + 500;
     double vt = vp.top(viewHeight) - 500;
     double vb = vp.bottom(viewHeight) + 500;
 
     for (const auto& [uuid, node] : nodes_) {
-        if (node->rect.x + node->rect.width > vl &&
-            node->rect.x < vr &&
-            node->rect.y + node->rect.height > vt &&
-            node->rect.y < vb) {
+        Rect world = computeWorldRect(uuid);
+        if (world.x + world.width > vl &&
+            world.x < vr &&
+            world.y + world.height > vt &&
+            world.y < vb) {
             result.push_back(node);
         }
     }
@@ -455,7 +456,8 @@ std::shared_ptr<Node> Canvas::findNodeAt(double x, double y) const {
     double topmostLevel = -1000;
 
     for (const auto& [uuid, node] : nodes_) {
-        if (node->rect.contains(x, y)) {
+        Rect world = computeWorldRect(uuid);
+        if (world.contains(x, y)) {
             if (node->zoomLevel > topmostLevel) {
                 topmost = node;
                 topmostLevel = node->zoomLevel;
@@ -475,10 +477,11 @@ std::vector<std::shared_ptr<Node>> Canvas::findNodesInRect(
     double maxY = std::max(y1, y2);
 
     for (const auto& [uuid, node] : nodes_) {
-        if (node->rect.x + node->rect.width > minX &&
-            node->rect.x < maxX &&
-            node->rect.y + node->rect.height > minY &&
-            node->rect.y < maxY) {
+        Rect world = computeWorldRect(uuid);
+        if (world.x + world.width > minX &&
+            world.x < maxX &&
+            world.y + world.height > minY &&
+            world.y < maxY) {
             result.push_back(node);
         }
     }
@@ -491,9 +494,11 @@ std::vector<std::shared_ptr<Node>> Canvas::findNodesInRect(
 
 std::string Canvas::createConnection(const std::string& fromUuid,
                                       const std::string& toUuid,
+                                      const std::string& name,
                                       ConnType type) {
     std::string connUuid = Uuid::generate();
     auto conn = std::make_shared<Connection>(connUuid, fromUuid, toUuid, type);
+    conn->name = name;
     connections_[connUuid] = conn;
 
     auto now = static_cast<uint64_t>(
@@ -650,7 +655,7 @@ std::string Canvas::createFrame(const std::vector<std::string>& nodeUuids,
     frameRect.width = (maxX - minX) + 2 * padding;
     frameRect.height = (maxY - minY) + 2 * padding;
 
-    std::string frameUuid = createNode(label, frameRect, "", 0);
+    std::string frameUuid = createNode(label, frameRect, label, "", 0);
     if (!frameUuid.empty()) {
         auto frameNode = getNode(frameUuid);
         if (frameNode) {
@@ -712,6 +717,29 @@ void Canvas::autoLayout() {
 
 void Canvas::notifyChanged() {
     if (changed_) changed_();
+}
+
+Rect Canvas::computeWorldRect(const std::string& uuid) const {
+    auto it = nodes_.find(uuid);
+    if (it == nodes_.end()) return Rect{};
+    const Node* node = it->second.get();
+
+    if (node->parentId.empty()) {
+        // Root node — coordinates are already in world space
+        return node->rect;
+    }
+
+    // Walk up to parent, compute parent's world rect, then add relative offset
+    auto parentIt = nodes_.find(node->parentId);
+    if (parentIt == nodes_.end()) return node->rect;
+
+    Rect parentWorld = computeWorldRect(node->parentId);
+    Rect world;
+    world.x = parentWorld.x + node->rect.x;
+    world.y = parentWorld.y + node->rect.y;
+    world.width = node->rect.width;
+    world.height = node->rect.height;
+    return world;
 }
 
 } // namespace ic

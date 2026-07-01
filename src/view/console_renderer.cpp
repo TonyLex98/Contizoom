@@ -53,59 +53,31 @@ void ConsoleRenderer::flush() {
 }
 
 // ====================================================================
-// Screen rect computation: children inside parents
+// Screen rect computation: ALL nodes via world coords
 // ====================================================================
 ScreenRect ConsoleRenderer::computeScreenRect(const Node* node, const Canvas& canvas,
-                                               const Viewport& vp, int vw, int vh) {
+                                                const Viewport& vp, int vw, int vh) {
     auto it = screenRects_.find(node->uuid);
     if (it != screenRects_.end()) return it->second;
 
+    // Compute absolute world rect (handles relative-to-parent chain)
+    Rect world = canvas.computeWorldRect(node->uuid);
+
     int depthDiff = node->zoomLevel - vp.zoomLevel;
-    auto parent = canvas.getNode(node->parentId);
-
-    if (parent) {
-        // node.rect хранит координаты ВНУТРИ родителя (px от 0..parent.width)
-        ScreenRect parentSr = computeScreenRect(parent.get(), canvas, vp, vw, vh);
-
-        double pw = parent->rect.width;
-        double ph = parent->rect.height;
-        // node->rect.x уже относительно родителя, делим на размер родителя для относительной позиции
-        double relX = pw > 0 ? node->rect.x / pw : 0.0;
-        double relY = ph > 0 ? node->rect.y / ph : 0.0;
-        double relW = pw > 0 ? node->rect.width / pw : 0.1;
-        double relH = ph > 0 ? node->rect.height / ph : 0.2;
-
-        relX = std::max(0.02, relX);
-        relY = std::max(0.02, relY);
-        if (relX + relW > 0.98) relW = 0.98 - relX;
-        if (relY + relH > 0.98) relH = 0.98 - relY;
-
-        ScreenRect sr;
-        sr.x = parentSr.x + relX * parentSr.w;
-        sr.y = parentSr.y + relY * parentSr.h;
-        sr.w = relW * parentSr.w;
-        sr.h = relH * parentSr.h;
-        screenRects_[node->uuid] = sr;
-        return sr;
-    }
-
-    // Root node — no parent, position from viewport center
     double scale = vp.textScale;
     if (depthDiff < 0) {
-        // Above viewport: scale up
         for (int i = 0; i < -depthDiff; i++) scale *= 2.0;
     } else {
-        // Below viewport: scale down
         for (int i = 0; i < depthDiff; i++) scale *= 0.5;
     }
 
     double cx = canvasArea_.centerX();
     double cy = canvasArea_.centerY();
     ScreenRect sr;
-    sr.x = (node->rect.x - vp.centerX) * scale + cx;
-    sr.y = (node->rect.y - vp.centerY) * scale + cy;
-    sr.w = node->rect.width * scale;
-    sr.h = node->rect.height * scale;
+    sr.x = (world.x - vp.centerX) * scale + cx;
+    sr.y = (world.y - vp.centerY) * scale + cy;
+    sr.w = world.width * scale;
+    sr.h = world.height * scale;
     screenRects_[node->uuid] = sr;
     return sr;
 }
@@ -218,43 +190,86 @@ void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw,
     if (w < 1 || h < 1) return;
 
     char hLine = '-', vLine = '|', corner = '+';
-    uint16_t borderAttr = 7, textAttr = 7;
+    uint16_t borderAttr = 7, textAttr = 7, nameAttr = 0x0E;
 
     if (node.state == NodeState::Selected) {
         hLine = '='; vLine = '#'; corner = '#';
-        borderAttr = 0x0F; textAttr = 0x0F;
+        borderAttr = 0x0F; textAttr = 0x0F; nameAttr = 0x0F;
     } else if (node.state == NodeState::Hovered) {
         hLine = '~'; vLine = ':'; corner = '.';
-        borderAttr = 0x0A; textAttr = 0x0A;
+        borderAttr = 0x0A; textAttr = 0x0A; nameAttr = 0x0E;
     } else if (node.state == NodeState::InConnection) {
         hLine = '*'; vLine = '*'; corner = '*';
-        borderAttr = 0x0C; textAttr = 0x0C;
+        borderAttr = 0x0C; textAttr = 0x0C; nameAttr = 0x0E;
     }
 
-    // Border
+    // Bottom border
+    int by = oy + h - 1;
     for (int x = ox; x < ox + w; x++) {
-        putChar(x, oy, (x == ox || x == ox + w - 1) ? corner : hLine);
-        putAttr(x, oy, borderAttr);
-        int by = oy + h - 1;
-        if (by > oy) {
-            putChar(x, by, (x == ox || x == ox + w - 1) ? corner : hLine);
-            putAttr(x, by, borderAttr);
-        }
+        putChar(x, by, (x == ox || x == ox + w - 1) ? corner : hLine);
+        putAttr(x, by, borderAttr);
     }
-    for (int y = oy; y < oy + h; y++) {
-        putChar(ox, y, (y == oy || y == oy + h - 1) ? corner : vLine);
+    // Side borders
+    for (int y = oy + 1; y < by; y++) {
+        putChar(ox, y, vLine);
         putAttr(ox, y, borderAttr);
         if (ox + w - 1 > ox) {
-            putChar(ox + w - 1, y, (y == oy || y == oy + h - 1) ? corner : vLine);
+            putChar(ox + w - 1, y, vLine);
             putAttr(ox + w - 1, y, borderAttr);
         }
     }
 
-    // Text (UTF-8 decode)
-    if (w >= 5 && h >= 3) {
+    // Top border — ALWAYS render name centered in header
+    bool hasHeader = (h >= 3 && w >= 4) || !node.name.empty();
+    int textStartY = oy + 1;
+    if (hasHeader && w >= 4) {
+        // Top-left/right corners
+        putChar(ox, oy, corner); putAttr(ox, oy, borderAttr);
+        putChar(ox + w - 1, oy, corner); putAttr(ox + w - 1, oy, borderAttr);
+        // Fill entire top border with hLine first
+        for (int x = ox + 1; x < ox + w - 1; x++) {
+            putChar(x, oy, hLine);
+            putAttr(x, oy, borderAttr);
+        }
+        // Name centered in the header row, highlighted
+        if (!node.name.empty()) {
+            int nameW = w - 2;
+            int nameLen = static_cast<int>(node.name.size());
+            int startX = (nameW - nameLen) / 2;
+            if (startX < 0) startX = 0;
+            int drawLen = std::min(nameW, nameLen);
+            for (int i = 0; i < drawLen; i++) {
+                unsigned char b = static_cast<unsigned char>(node.name[startX + i]);
+                wchar_t ch;
+                if (b < 0x80) ch = b;
+                else if (b < 0xE0 && startX + i + 1 < nameLen) {
+                    ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(node.name[startX + i + 1]) & 0x3F);
+                }
+                else if (b >= 0xE0 && startX + i + 2 < nameLen) {
+                    ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(node.name[startX + i + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(node.name[startX + i + 2]) & 0x3F);
+                }
+                else ch = b;
+                putChar(ox + 1 + i, oy, ch);
+                putAttr(ox + 1 + i, oy, nameAttr);
+            }
+        }
+        textStartY = oy + 1;
+    } else {
+        // Simple top border, no header room
+        putChar(ox, oy, corner); putAttr(ox, oy, borderAttr);
+        putChar(ox + w - 1, oy, corner); putAttr(ox + w - 1, oy, borderAttr);
+        for (int x = ox + 1; x < ox + w - 1; x++) {
+            putChar(x, oy, hLine);
+            putAttr(x, oy, borderAttr);
+        }
+    }
+
+    // Body text — only if node is large enough (zoom check: text disappears first when zooming out)
+    bool showText = (w >= 5 && h >= (hasHeader ? 4 : 3)) && !node.text.empty();
+    if (showText) {
         std::istringstream iss(node.text);
         std::string line;
-        int ty = oy + 1;
+        int ty = textStartY;
         while (std::getline(iss, line) && ty < oy + h - 1) {
             int cx = 0;
             for (size_t i = 0; i < line.size() && cx < w - 2;) {
@@ -269,7 +284,20 @@ void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw,
             }
             ty++;
         }
-    } else if (w >= 3 && h >= 2 && !node.text.empty()) {
+    }
+    // If node is too small for text but has a name, show name centered in the body
+    if (!showText && !node.name.empty() && w >= 4 && h >= 2) {
+        int nameLen = static_cast<int>(node.name.size());
+        int bodyW = w - 2;
+        int startX = (bodyW - nameLen) / 2;
+        if (startX < 0) startX = 0;
+        for (int i = 0; i < bodyW && i < nameLen; i++) {
+            unsigned char b = static_cast<unsigned char>(node.name[i]);
+            wchar_t ch = (b < 0x80) ? b : static_cast<wchar_t>(b);
+            putChar(ox + 1 + startX + i, oy + h / 2, ch);
+            putAttr(ox + 1 + startX + i, oy + h / 2, nameAttr);
+        }
+    } else if (!showText && w >= 3 && h >= 2 && !node.text.empty()) {
         unsigned char b = static_cast<unsigned char>(node.text[0]);
         wchar_t fc;
         if (b < 0x80) fc = b;
@@ -462,7 +490,7 @@ void ConsoleRenderer::drawHUD(const Viewport& vp, int vw, int vh) {
         putAttr(x, 0, topAttr);
     }
 
-    std::string bot = " Drag:Pan Click:Select DblClick:Edit Scroll:Zoom [ ]:Level +/-:Text "
+    std::string bot = " DblClick:Select+Edit Click+Drag:Move Click:Clear Pan:DragEmpty Scroll:Zoom [ ]:Level +/-:Text "
                          "N:NewNode Sel+N:Child F:Frame X:Del Tab:Promote Esc:Clear RClick:Menu "
                          "Ctrl+S:Save Ctrl+N:New Ctrl+Q:Quit " +
                         std::string(IC_VERSION_STRING);

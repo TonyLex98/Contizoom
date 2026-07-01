@@ -55,7 +55,11 @@ InputResult InputHandler::handleKeyPress(const InputEvent& event) {
         canvas_.viewport_.zoomLevel = key - '0';
         return InputResult::Handled;
     }
-    if (key == '[') { canvas_.viewport_.zoomLevel--; return InputResult::Handled; }
+    if (key == '[') {
+        canvas_.viewport_.zoomLevel--;
+        autoCenterViewportOnRoot();
+        return InputResult::Handled;
+    }
     if (key == ']') { canvas_.viewport_.zoomLevel++; return InputResult::Handled; }
     if (key == 'z') { zHeld_ = true; return InputResult::Handled; }
 
@@ -67,6 +71,7 @@ InputResult InputHandler::handleKeyPress(const InputEvent& event) {
         return InputResult::Handled;
     }
     if (key == 'f') { createFrame(); return InputResult::Handled; }
+    if (key == 'r') { renameSelected(); return InputResult::Handled; }
     if (key == 'x') { deleteSelected(); return InputResult::Handled; }
     if (key == 'n') { createNodeAtCursor(); return InputResult::Handled; }
     if (key == '+') { canvas_.viewport_.textScale = std::min(5.0, canvas_.viewport_.textScale * 1.2); return InputResult::Handled; }
@@ -130,7 +135,7 @@ InputResult InputHandler::handleMouseMove(const InputEvent& event) {
         return InputResult::Handled;
     }
 
-    if (mouseDown_.left) {
+    if (mouseDown_.left && !draggingNodes_) {
         // Pan: use screen delta directly for 1:1 movement
         int dsx = event.mouseX - lastScreenX_;
         int dsy = event.mouseY - lastScreenY_;
@@ -167,13 +172,6 @@ InputResult InputHandler::handleMouseDown(const InputEvent& event) {
     }
 
     if (event.button == 0) { // Left
-        // Если редактируем — клик вне текущей ноды сохраняет и выходит
-        if (editingNode_) {
-            auto clickedNode = findNodeAtScreen(event.mouseX, event.mouseY);
-            if (!clickedNode || clickedNode->uuid != *editingNode_) {
-                commitEdit();
-            }
-        }
         auto node = findNodeAtScreen(event.mouseX, event.mouseY);
 
         // Double-click detection
@@ -181,21 +179,39 @@ InputResult InputHandler::handleMouseDown(const InputEvent& event) {
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count());
         bool isDoubleClick = (nowMs - lastClickTime_ < 350) &&
-                             (std::abs(event.mouseX - lastClickX_) < 2) &&
-                             (std::abs(event.mouseY - lastClickY_) < 2) &&
-                             node && node->uuid == lastClickedNode_.value_or("");
+                              (std::abs(event.mouseX - lastClickX_) < 2) &&
+                              (std::abs(event.mouseY - lastClickY_) < 2) &&
+                              node && node->uuid == lastClickedNode_.value_or("");
 
-        if (isDoubleClick) {
+        if (isDoubleClick && node) {
+            // Double click: выбрать и редактировать
+            selectNode(node->uuid, event.mods.shift);
             startEditing(node->uuid);
             lastClickTime_ = 0;
+            mouseDown_.left = true;
+            lastScreenX_ = event.mouseX;
+            lastScreenY_ = event.mouseY;
+            lastClickX_ = event.mouseX;
+            lastClickY_ = event.mouseY;
+            lastClickTime_ = nowMs;
+            lastClickedNode_ = node ? std::optional<std::string>(node->uuid) : std::nullopt;
             return InputResult::Handled;
         }
 
-        if (event.mods.ctrl) {
-            if (node) { startConnection(node->uuid); node->state = NodeState::InConnection; }
-        } else {
-            if (node) {
-                selectNode(node->uuid, event.mods.shift);
+        // Если редактируем и кликаем в другое место — сохраняем и выходим
+        if (editingNode_) {
+            if (!node || node->uuid != *editingNode_) {
+                commitEdit();
+            }
+        }
+
+        // Single click
+        if (event.mods.ctrl && node) {
+            startConnection(node->uuid);
+            node->state = NodeState::InConnection;
+        } else if (node) {
+            if (node->state == NodeState::Selected) {
+                // Клик на выбранную: перетаскивание
                 draggingNodes_ = true;
 
                 // Capture drag state for ALL selected nodes
@@ -212,7 +228,6 @@ InputResult InputHandler::handleMouseDown(const InputEvent& event) {
                         ds.startRelY = n->rect.y;
                         ds.startScreenX = event.mouseX;
                         ds.startScreenY = event.mouseY;
-                        // Capture parent screen rect ONCE (won't change during drag)
                         auto pit = screenRects_.find(parent->uuid);
                         if (pit != screenRects_.end()) {
                             ds.parentSrW = pit->second.w;
@@ -229,8 +244,19 @@ InputResult InputHandler::handleMouseDown(const InputEvent& event) {
                     }
                     dragStates_[n->uuid] = ds;
                 }
+            } else {
+                // Клик на невыбранную: снять выделение и редактирование
+                if (editingNode_) commitEdit();
+                for (auto& [_, n] : canvas_.allNodes())
+                    if (n->state == NodeState::Selected) n->state = NodeState::Normal;
             }
+        } else {
+            // Клик в пустоту: снять выделение и редактирование
+            if (editingNode_) commitEdit();
+            for (auto& [_, n] : canvas_.allNodes())
+                if (n->state == NodeState::Selected) n->state = NodeState::Normal;
         }
+
         mouseDown_.left = true;
         lastLogicalX_ = lx;
         lastLogicalY_ = ly;
@@ -262,6 +288,7 @@ InputResult InputHandler::handleMouseUp(const InputEvent& event) {
         for (const auto& pId : parents) {
             canvas_.resolveOverlaps(pId);
         }
+
         draggingNodes_ = false;
         dragStates_.clear();
     }
@@ -269,7 +296,7 @@ InputResult InputHandler::handleMouseUp(const InputEvent& event) {
     if (event.button == 0 && connectionFrom_) {
         auto target = findNodeAtScreen(event.mouseX, event.mouseY);
         if (target && target->uuid != *connectionFrom_)
-            canvas_.createConnection(*connectionFrom_, target->uuid, ConnType::Arrow);
+            canvas_.createConnection(*connectionFrom_, target->uuid, "", ConnType::Arrow);
         cancelConnection();
     }
     if (event.button == 1 && canvas_.selection_.active) {
@@ -318,9 +345,10 @@ void InputHandler::selectNode(const std::string& uuid, bool add) {
 void InputHandler::selectArea(double x1, double y1, double x2, double y2) {
     double mnX = std::min(x1,x2), mxX = std::max(x1,x2);
     double mnY = std::min(y1,y2), mxY = std::max(y1,y2);
-    for (auto& [_, n] : canvas_.allNodes()) {
-        bool in = (n->rect.x+n->rect.width > mnX && n->rect.x < mxX &&
-                   n->rect.y+n->rect.height > mnY && n->rect.y < mxY);
+    for (auto& [uuid, n] : canvas_.allNodes()) {
+        Rect world = canvas_.computeWorldRect(uuid);
+        bool in = (world.x + world.width > mnX && world.x < mxX &&
+                    world.y + world.height > mnY && world.y < mxY);
         n->state = in ? NodeState::Selected : (n->state==NodeState::Selected ? NodeState::Normal : n->state);
     }
 }
@@ -374,7 +402,7 @@ void InputHandler::createNodeAtCursor() {
         r.height = 4.0;
         level = canvas_.viewport_.zoomLevel;
     }
-    std::string uuid = canvas_.createNode("New Node", r, parentId, level);
+    std::string uuid = canvas_.createNode("New Node", r, "New Node", parentId, level);
     if (!uuid.empty()) {
         auto node = canvas_.getNode(uuid);
         if (node) {
@@ -382,6 +410,34 @@ void InputHandler::createNodeAtCursor() {
             selectNode(uuid);
             startEditing(uuid);
         }
+    }
+}
+
+void InputHandler::renameSelected() {
+    for (auto& [u, n] : canvas_.allNodes()) {
+        if (n->state == NodeState::Selected) {
+            startEditingName(u);
+            break;
+        }
+    }
+}
+
+void InputHandler::autoCenterViewportOnRoot() {
+    double minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+    bool hasNodes = false;
+    for (const auto& [u, n] : canvas_.allNodes()) {
+        if (n->parentId.empty()) {
+            Rect world = canvas_.computeWorldRect(u);
+            minX = std::min(minX, world.x);
+            minY = std::min(minY, world.y);
+            maxX = std::max(maxX, world.x + world.width);
+            maxY = std::max(maxY, world.y + world.height);
+            hasNodes = true;
+        }
+    }
+    if (hasNodes) {
+        canvas_.viewport_.centerX = (minX + maxX) / 2.0;
+        canvas_.viewport_.centerY = (minY + maxY) / 2.0;
     }
 }
 
@@ -398,6 +454,7 @@ void InputHandler::cancelConnection() {
 // INLINE TEXT EDITING
 // ============================================================
 void InputHandler::startEditing(const std::string& nodeUuid) {
+    editingName_ = false;
     auto node = canvas_.getNode(nodeUuid);
     if (!node) return;
     editingNode_ = nodeUuid;
@@ -416,7 +473,22 @@ void InputHandler::startEditing(const std::string& nodeUuid) {
     canvas_.editOverlay_.cursorRow = editCursorRow_;
 }
 
- void InputHandler::handleEditKey(const InputEvent& event) {
+ void InputHandler::startEditingName(const std::string& nodeUuid) {
+    editingName_ = true;
+    auto node = canvas_.getNode(nodeUuid);
+    if (!node) return;
+    editingNode_ = nodeUuid;
+    editText_ = node->name;
+    editCursorCol_ = utf8CharCount(editText_);
+    editCursorRow_ = 0;
+    editNodeRect_ = node->rect;
+    canvas_.editOverlay_.active = true;
+    canvas_.editOverlay_.nodeUuid = nodeUuid;
+    canvas_.editOverlay_.nodeRect = node->rect;
+    canvas_.editOverlay_.text = node->name;
+}
+
+void InputHandler::handleEditKey(const InputEvent& event) {
     auto syncOverlay = [this]() {
         canvas_.editOverlay_.text = editText_;
         canvas_.editOverlay_.cursorCol = editCursorCol_;
@@ -646,7 +718,10 @@ void InputHandler::startEditing(const std::string& nodeUuid) {
 void InputHandler::commitEdit() {
     if (!editingNode_) return;
     auto node = canvas_.getNode(*editingNode_);
-    if (node) {
+    if (!node) { editingNode_.reset(); return; }
+    if (editingName_) {
+        node->name = editText_;
+    } else {
         node->text = editText_;
         node->autoResize();
     }

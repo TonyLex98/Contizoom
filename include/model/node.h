@@ -47,6 +47,7 @@ enum class NodeState {
 class Node {
 public:
     std::string uuid;
+    std::string name;           // Display name of the node
     std::string text;           // The text content of this node
     std::string parentId;       // Empty if root node
     std::vector<std::string> childrenUuids;

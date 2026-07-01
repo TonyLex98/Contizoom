@@ -34,6 +34,7 @@ enum class ConnColor {
 class Connection {
 public:
     std::string uuid;
+    std::string name;           // Display name of the connection
     std::string fromUuid;
     std::string toUuid;
 
