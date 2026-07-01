@@ -53,16 +53,41 @@ void ConsoleRenderer::flush() {
 }
 
 // ====================================================================
-// Screen rect computation: ALL nodes via world coords
+// Screen rect computation: roots via worldToScreen, children relative to parent
 // ====================================================================
 ScreenRect ConsoleRenderer::computeScreenRect(const Node* node, const Canvas& canvas,
                                                 const Viewport& vp, int vw, int vh) {
     auto it = screenRects_.find(node->uuid);
     if (it != screenRects_.end()) return it->second;
 
-    // Compute absolute world rect (handles relative-to-parent chain)
-    Rect world = canvas.computeWorldRect(node->uuid);
+    auto parent = canvas.getNode(node->parentId);
+    if (parent) {
+        // Children are positioned inside parent on screen
+        ScreenRect parentSr = computeScreenRect(parent.get(), canvas, vp, vw, vh);
+        double pw = parent->rect.width;
+        double ph = parent->rect.height;
+        double relX = pw > 0 ? node->rect.x / pw : 0.0;
+        double relY = ph > 0 ? node->rect.y / ph : 0.0;
+        double relW = pw > 0 ? node->rect.width / pw : 0.1;
+        double relH = ph > 0 ? node->rect.height / ph : 0.2;
 
+        // Clamp to parent bounds
+        relX = std::max(0.02, std::min(relX, 0.98));
+        relY = std::max(0.02, std::min(relY, 0.98));
+        relW = std::max(0.05, std::min(relW, 0.98 - relX));
+        relH = std::max(0.05, std::min(relH, 0.98 - relY));
+
+        ScreenRect sr;
+        sr.x = parentSr.x + relX * parentSr.w;
+        sr.y = parentSr.y + relY * parentSr.h;
+        sr.w = relW * parentSr.w;
+        sr.h = relH * parentSr.h;
+        screenRects_[node->uuid] = sr;
+        return sr;
+    }
+
+    // Root node: position via worldToScreen
+    Rect world = canvas.computeWorldRect(node->uuid);
     int depthDiff = node->zoomLevel - vp.zoomLevel;
     double scale = vp.textScale;
     if (depthDiff < 0) {
