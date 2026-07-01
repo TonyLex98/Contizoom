@@ -3,8 +3,108 @@
 #include "model/canvas.h"
 #include "version/version.h"
 #include <iostream>
+#include <fstream>
+#include <filesystem>
+#include <algorithm>
+#include <vector>
+
+namespace fs = std::filesystem;
 
 using namespace ic;
+
+static void createDemoFiles(const std::string& base) {
+    auto mk = [](const std::string& p) { fs::create_directories(p); };
+    auto wf = [](const std::string& p, const std::string& c) {
+        std::ofstream(p).write(c.data(), static_cast<std::streamsize>(c.size()));
+    };
+
+    mk(base + "/Design");
+    mk(base + "/Code");
+    mk(base + "/Tests/unit");
+    mk(base + "/Tests/integr");
+    mk(base + "/Docs");
+
+    wf(base + "/README.md", "## Project Root\n\nMain architecture documentation.");
+    wf(base + "/Design/README.md", "# Design\nDesign documentation.");
+    wf(base + "/Design/UI_spec.md", "# UI Spec\nUser interface specification.");
+    wf(base + "/Design/API_spec.md", "# API Spec\nAPI specification.");
+    wf(base + "/Code/main.cpp", "#include <iostream>\nint main() { return 0; }");
+    wf(base + "/Code/utils.cpp", "#include \"utils.h\"\n// Utility functions");
+    wf(base + "/Tests/unit/README.md", "# Unit Tests");
+    wf(base + "/Tests/integr/README.md", "# Integration Tests");
+    wf(base + "/Docs/README.md", "# Docs\nDocumentation");
+}
+
+static std::string basenameStr(const fs::path& p) {
+    std::string bn = p.has_filename() ? p.filename().u8string() : "";
+    if (!bn.empty()) {
+        auto dot = bn.find('.');
+        if (dot != std::string::npos) bn.erase(dot);
+    }
+    return bn.empty() ? "item" : bn;
+}
+
+static std::string scanFirstLines(const fs::path& p, int maxLines = 3) {
+    std::string res;
+    if (fs::is_regular_file(p)) {
+        std::ifstream ifs(p);
+        std::string line;
+        int n = 0;
+        while (std::getline(ifs, line) && n < maxLines) {
+            if (!res.empty()) res += "\n";
+            if (static_cast<int>(res.size()) + static_cast<int>(line.size()) > 200) break;
+            res += line; n++;
+        }
+    }
+    return res.empty() ? std::string(p.u8string()) : res;
+}
+
+static void scanDirIntoCanvas(Canvas& c, const fs::path& dirPath, const std::string& parentUuid, int level) {
+    std::vector<std::pair<std::string, bool>> entries;
+    try {
+        for (const auto& e : fs::directory_iterator(dirPath)) {
+            entries.emplace_back(e.path().filename().u8string(), e.is_directory());
+        }
+    } catch (...) { return; }
+
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        if (a.second != b.second) return a.second;
+        return a.first < b.first;
+    });
+
+    for (const auto& [name, isDir] : entries) {
+        auto fp = dirPath / name;
+        std::string bn = basenameStr(fp);
+        std::string display = isDir ? bn : name;
+        std::string text = isDir ? std::string("{") + std::to_string(entries.size()) + std::string(" items") : scanFirstLines(fp);
+
+        Rect r{1, 1, 15, 3};
+        if (!isDir && text.size() > 20) r.height = 3;
+        std::string uuid = c.createNode(text, r, display, parentUuid, level);
+
+        if (isDir) {
+            try { scanDirIntoCanvas(c, fp, uuid, level + 1); } catch (...) {}
+        }
+    }
+}
+
+static void loadDemoFromDir(Canvas& c, const std::string& demoDir) {
+    if (!fs::exists(demoDir) || !fs::is_directory(demoDir)) {
+        createDemoFiles(demoDir);
+    }
+
+    c.canvasName = fs::path(demoDir).filename().u8string();
+    c.viewport_.centerX = 60;
+    c.viewport_.centerY = 15;
+    c.viewport_.textScale = 1.0;
+
+    std::string root = c.createNode(
+        fs::path(demoDir).filename().u8string() + "\nFile system view",
+        Rect{5, 2, 100, 30}, fs::path(demoDir).filename().u8string(), "", 0);
+
+    try { scanDirIntoCanvas(c, demoDir, root, 1); } catch (...) {}
+    c.autoLayout();
+}
 
 int main(int argc, char* argv[]) {
     App app;
@@ -41,49 +141,30 @@ int main(int argc, char* argv[]) {
         }
     }
     else {
-        // Demo: fractal layout — children INSIDE parents
-        app.createProject("Fractal Demo");
-        auto& c = *app.canvas();
-        c.viewport_.centerX = 60;
-        c.viewport_.centerY = 15;
-        c.viewport_.textScale = 1.0;
+        // Demo: load from saved file or create from demo_project/
+        fs::path exeDir = fs::current_path();
+        std::string demoDir = (exeDir / "demo_project").u8string();
+        std::string savedPath = (exeDir / "demo.canvas").u8string();
 
-        // Level 0: root (absolute world coords)
-        std::string root = c.createNode(
-            "Project Root\nMain architecture", Rect{15, 3, 90, 24}, "Root", "", 0);
-
-        // Level 1: children of root (relative inside parent: x 0..90, y 0..24)
-        std::string d1 = c.createNode("Design",   Rect{2, 2, 42, 10}, "Design", root, 1);
-        std::string d2 = c.createNode("Code",     Rect{46, 2, 42, 10}, "Code", root, 1);
-        std::string d3 = c.createNode("Tests",    Rect{2, 14, 42, 8}, "Tests", root, 1);
-        std::string d4 = c.createNode("Docs",     Rect{46, 14, 42, 8}, "Docs", root, 1);
-
-        // Level 2: children inside level-1 (relative inside parent)
-        c.createNode("UI spec",   Rect{2, 2, 18, 3}, "UI spec", d1, 2);
-        c.createNode("API spec",  Rect{22, 2, 18, 3}, "API spec", d1, 2);
-        c.createNode("main.cpp",  Rect{2, 2, 18, 3}, "main.cpp", d2, 2);
-        c.createNode("utils.cpp", Rect{22, 2, 18, 3}, "utils.cpp", d2, 2);
-        c.createNode("unit",      Rect{2, 2, 18, 3}, "unit", d3, 2);
-        c.createNode("integr",    Rect{22, 2, 18, 3}, "integr", d3, 2);
-
-        // Level 3: children inside Design
-        c.createNode("pages", Rect{4, 4, 8, 2}, "pages", d1, 3);
-        c.createNode("ctrl",  Rect{14, 4, 8, 2}, "ctrl", d1, 3);
-
-        // Connections
-        c.createConnection(root, d1, "Design link", ConnType::Arrow);
-        c.createConnection(root, d2, "Code link", ConnType::Arrow);
-        c.createConnection(root, d3, "Tests link", ConnType::DottedArrow);
-        c.createConnection(root, d4, "Docs link", ConnType::DottedArrow);
-        c.createConnection(d1, d2, "Design-Code", ConnType::DashedLine);
-
-        // Auto-layout: expand parents and resolve overlaps
-        c.autoLayout();
+        if (fs::exists(savedPath + "/manifest.json")) {
+            // Load saved project
+            if (app.openProject(savedPath).empty()) {
+                std::cerr << "Failed to load saved demo, recreating...\n";
+                app.createProject("File System Demo");
+                loadDemoFromDir(*app.canvas(), demoDir);
+            }
+        } else {
+            // First run: create from files and save
+            app.createProject("File System Demo");
+            loadDemoFromDir(*app.canvas(), demoDir);
+            app.saveAs(savedPath);
+        }
     }
 
     std::cout << "Right-click to open Project Menu\n";
     std::cout << "Projects directory: " << ProjectManager::defaultProjectsDir() << "\n";
 
     app.run();
+
     return 0;
 }

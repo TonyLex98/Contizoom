@@ -52,13 +52,26 @@ std::string ProjectManager::createProject(const std::string& name) {
     canvas->createdAt = std::time(nullptr);
     canvas->modifiedAt = canvas->createdAt;
 
-    // Connect dirty callback
-    canvas->onChanged([this, uuid]() { markDirty(uuid); });
-
     ProjectInfo info;
     info.uuid = uuid;
     info.name = name;
     info.path.clear(); // Unsaved
+
+    // Connect dirty callback: save immediately if path is set
+    canvas->onChanged([this, uuid]() {
+        auto it = canvases_.find(uuid);
+        if (it == canvases_.end()) return;
+        auto pIt = std::find_if(projects_.begin(), projects_.end(),
+            [&](const ProjectInfo& p) { return p.uuid == uuid; });
+        if (pIt == projects_.end()) return;
+        pIt->dirty = true;
+        pIt->modifiedAt = std::time(nullptr);
+        // Auto-save if project has a path
+        if (!pIt->path.empty() && storage_) {
+            storage_->saveCanvas(*(it->second), pIt->path);
+            pIt->dirty = false;
+        }
+    });
     info.dirty = false;
     info.createdAt = canvas->createdAt;
     info.modifiedAt = info.createdAt;
@@ -84,8 +97,22 @@ std::string ProjectManager::openProject(const std::string& path) {
     }
 
     std::string uuid = generateProjectUuid();
-    canvas->onChanged([this, uuid]() { markDirty(uuid); });
     canvas->modifiedAt = std::time(nullptr);
+
+    canvas->onChanged([this, uuid]() {
+        auto it = canvases_.find(uuid);
+        if (it == canvases_.end()) return;
+        auto pIt = std::find_if(projects_.begin(), projects_.end(),
+            [&](const ProjectInfo& p) { return p.uuid == uuid; });
+        if (pIt == projects_.end()) return;
+        pIt->dirty = true;
+        pIt->modifiedAt = std::time(nullptr);
+        // Auto-save if project has a path
+        if (!pIt->path.empty() && storage_) {
+            storage_->saveCanvas(*(it->second), pIt->path);
+            pIt->dirty = false;
+        }
+    });
 
     ProjectInfo info;
     info.uuid = uuid;

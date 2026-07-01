@@ -159,6 +159,67 @@ void ConsoleRenderer::render(const Canvas& canvas) {
     // Sidebar
     drawSidebar(canvas);
 
+    // FINAL pass: draw ALL names on absolute top of everything
+    // Reverse order: parents (low zoomLevel) on top of children (high zoomLevel)
+    for (auto rit = sorted.rbegin(); rit != sorted.rend(); ++rit) {
+        const auto* node = *rit;
+        if (node->name.empty()) continue;
+        auto sit = screenRects_.find(node->uuid);
+        if (sit == screenRects_.end()) continue;
+        const auto& sr = sit->second;
+        int ox = static_cast<int>(sr.x);
+        int oy = static_cast<int>(sr.y);
+        int w = static_cast<int>(sr.w);
+        int h = static_cast<int>(sr.h);
+        if (w < 4 || h < 2) continue;
+
+        // Count display characters (UTF-8 aware)
+        int displayChars = 0;
+        std::vector<int> charBytes;
+        {
+            size_t i = 0;
+            while (i < node->name.size()) {
+                unsigned char b = static_cast<unsigned char>(node->name[i]);
+                if (b < 0x80) { charBytes.push_back(static_cast<int>(i)); i += 1; }
+                else if (b < 0xE0) { charBytes.push_back(static_cast<int>(i)); i += 2; }
+                else { charBytes.push_back(static_cast<int>(i)); i += 3; }
+                displayChars++;
+            }
+        }
+        if (displayChars == 0) continue;
+
+        int innerW = w - 2;
+        int nameStartChar = (innerW - displayChars) / 2;
+        if (nameStartChar < 0) nameStartChar = 0;
+        int drawChars = std::min(innerW - nameStartChar, displayChars);
+        uint16_t finalNameAttr = node->state == NodeState::Selected ? 0x0F : 0x0E;
+        for (int i = 0; i < drawChars; i++) {
+            int bytePos = charBytes[i];
+            unsigned char b = static_cast<unsigned char>(node->name[bytePos]);
+            wchar_t ch;
+            if (b < 0x80) ch = b;
+            else if (b < 0xE0 && bytePos + 1 < static_cast<int>(node->name.size())) {
+                ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(node->name[bytePos + 1]) & 0x3F);
+            }
+            else if (b >= 0xE0 && bytePos + 2 < static_cast<int>(node->name.size())) {
+                ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(node->name[bytePos + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(node->name[bytePos + 2]) & 0x3F);
+            }
+            else ch = b;
+            putChar(ox + 1 + nameStartChar + i, oy, ch);
+            putAttr(ox + 1 + nameStartChar + i, oy, finalNameAttr);
+        }
+
+        // Redraw corners to guarantee they are never overwritten by names
+        if (w >= 2 && h >= 2) {
+            char hCorner = (node->state == NodeState::Selected) ? '#' :
+                           (node->state == NodeState::Hovered) ? '#' : '+';
+            uint16_t hAttr = (node->state == NodeState::Selected) ? 0x0F :
+                             (node->state == NodeState::Hovered) ? 0x0A : 0x09;
+            putChar(ox, oy, hCorner); putAttr(ox, oy, hAttr);
+            putChar(ox + w - 1, oy, hCorner); putAttr(ox + w - 1, oy, hAttr);
+        }
+    }
+
     flush();
 }
 
@@ -244,43 +305,27 @@ void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw,
         }
     }
 
-    // Top border — ALWAYS render name centered in header
     bool hasHeader = (h >= 3 && w >= 4) || !node.name.empty();
     int textStartY = oy + 1;
-    if (hasHeader && w >= 4) {
-        // Top-left/right corners
-        putChar(ox, oy, corner); putAttr(ox, oy, borderAttr);
-        putChar(ox + w - 1, oy, corner); putAttr(ox + w - 1, oy, borderAttr);
-        // Fill entire top border with hLine first
-        for (int x = ox + 1; x < ox + w - 1; x++) {
-            putChar(x, oy, hLine);
-            putAttr(x, oy, borderAttr);
-        }
-        // Name centered in the header row, highlighted
-        if (!node.name.empty()) {
-            int nameW = w - 2;
-            int nameLen = static_cast<int>(node.name.size());
-            int startX = (nameW - nameLen) / 2;
-            if (startX < 0) startX = 0;
-            int drawLen = std::min(nameW, nameLen);
-            for (int i = 0; i < drawLen; i++) {
-                unsigned char b = static_cast<unsigned char>(node.name[startX + i]);
-                wchar_t ch;
-                if (b < 0x80) ch = b;
-                else if (b < 0xE0 && startX + i + 1 < nameLen) {
-                    ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(node.name[startX + i + 1]) & 0x3F);
-                }
-                else if (b >= 0xE0 && startX + i + 2 < nameLen) {
-                    ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(node.name[startX + i + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(node.name[startX + i + 2]) & 0x3F);
-                }
-                else ch = b;
-                putChar(ox + 1 + i, oy, ch);
-                putAttr(ox + 1 + i, oy, nameAttr);
-            }
-        }
-        textStartY = oy + 1;
+    char hCorner = corner, hLineChar = hLine;
+    uint16_t hAttr = borderAttr;
+    if (node.state == NodeState::Selected) {
+        hCorner = '#'; hLineChar = '='; hAttr = 0x0F;
+    } else if (node.state == NodeState::Hovered) {
+        hCorner = '#'; hLineChar = '='; hAttr = 0x0A;
     } else {
-        // Simple top border, no header room
+        hCorner = '+'; hLineChar = '='; hAttr = 0x09;
+    }
+
+    // --- Top border ---
+    if (hasHeader && w >= 4) {
+        putChar(ox, oy, hCorner); putAttr(ox, oy, hAttr);
+        putChar(ox + w - 1, oy, hCorner); putAttr(ox + w - 1, oy, hAttr);
+        for (int x = ox + 1; x < ox + w - 1; x++) {
+            putChar(x, oy, hLineChar);
+            putAttr(x, oy, hAttr);
+        }
+    } else {
         putChar(ox, oy, corner); putAttr(ox, oy, borderAttr);
         putChar(ox + w - 1, oy, corner); putAttr(ox + w - 1, oy, borderAttr);
         for (int x = ox + 1; x < ox + w - 1; x++) {
@@ -310,27 +355,18 @@ void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw,
             ty++;
         }
     }
-    // If node is too small for text but has a name, show name centered in the body
-    if (!showText && !node.name.empty() && w >= 4 && h >= 2) {
-        int nameLen = static_cast<int>(node.name.size());
-        int bodyW = w - 2;
-        int startX = (bodyW - nameLen) / 2;
-        if (startX < 0) startX = 0;
-        for (int i = 0; i < bodyW && i < nameLen; i++) {
-            unsigned char b = static_cast<unsigned char>(node.name[i]);
-            wchar_t ch = (b < 0x80) ? b : static_cast<wchar_t>(b);
-            putChar(ox + 1 + startX + i, oy + h / 2, ch);
-            putAttr(ox + 1 + startX + i, oy + h / 2, nameAttr);
-        }
-    } else if (!showText && w >= 3 && h >= 2 && !node.text.empty()) {
+    // Fallback: if node is too small for text but room exists, show first char of text
+    if (!showText && w >= 3 && h >= 2 && !node.text.empty()) {
         unsigned char b = static_cast<unsigned char>(node.text[0]);
         wchar_t fc;
         if (b < 0x80) fc = b;
         else if (b < 0xE0 && node.text.size() >= 2) fc = ((b & 0x1F) << 6) | (static_cast<unsigned char>(node.text[1]) & 0x3F);
         else fc = '?';
-        putChar(ox + 1, oy + (h > 2 ? 1 : 0), fc);
-        putAttr(ox + 1, oy + (h > 2 ? 1 : 0), textAttr);
+        putChar(ox + 1, oy + 1, fc);
+        putAttr(ox + 1, oy + 1, textAttr);
     }
+
+
 }
 
 void ConsoleRenderer::drawConnectionAt(const Connection* conn, const ScreenRect& from,

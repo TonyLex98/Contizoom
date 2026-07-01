@@ -1,0 +1,1 @@
+﻿#include <iostream>\n\nint main() {\n    return 0;\n}
