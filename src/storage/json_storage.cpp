@@ -397,7 +397,8 @@ std::string JsonStorage::manifestPath(const std::string& canvasPath) {
 bool JsonStorage::saveNode(const Node* node, const std::string& canvasPath) {
     try {
         fs::create_directories(nodesDir(canvasPath));
-        std::ofstream nf(nodeTextPath(canvasPath, node->uuid) + ".meta");
+        std::string metaPath = nodesDir(canvasPath) + "/" + node->uuid + ".meta";
+        std::ofstream nf(metaPath);
         if (!nf.is_open()) return false;
         nf << "{\n";
         nf << "  \"uuid\": \"" << node->uuid << "\",\n";

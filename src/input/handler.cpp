@@ -763,6 +763,7 @@ void InputHandler::commitEdit() {
         node->text = editText_;
         node->autoResize();
     }
+    canvas_.notifyChanged(*editingNode_);
     editingNode_.reset();
     canvas_.editOverlay_.active = false;
 }
