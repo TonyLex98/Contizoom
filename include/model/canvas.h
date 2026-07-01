@@ -151,9 +151,16 @@ public:
     uint64_t createdAt = 0;
     uint64_t modifiedAt = 0;
 
-    // Callback when canvas changes
+    // Callback when canvas changes (without node info)
     using ChangedCallback = std::function<void()>;
     void onChanged(ChangedCallback cb) { changed_ = cb; }
+
+    // Callback when a specific node changes
+    using NodeChangedCallback = std::function<void(const std::string& nodeUuid)>;
+    void onNodeChanged(NodeChangedCallback cb) { nodeChanged_ = cb; }
+
+    // Notify that a specific node changed (triggers incremental save)
+    void notifyChanged(const std::string& uuid);
 
     // Get all nodes (for serialization)
     const std::map<std::string, std::shared_ptr<Node>>& allNodes() const { return nodes_; }
@@ -167,6 +174,7 @@ private:
     std::map<std::string, std::shared_ptr<Node>> nodes_;
     std::map<std::string, std::shared_ptr<Connection>> connections_;
     ChangedCallback changed_;
+    NodeChangedCallback nodeChanged_;
 
     void notifyChanged();
 };

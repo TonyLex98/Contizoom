@@ -1,5 +1,6 @@
 #include "storage/json_storage.h"
 #include "model/canvas.h"
+#include "model/node.h"
 #include "version/version.h"
 #include "util/strutil.h"
 #include <fstream>
@@ -248,6 +249,54 @@ bool JsonStorage::loadCanvas(Canvas& canvas, const std::string& path) {
             }
         }
 
+        // Apply incremental .meta files on top of loaded nodes
+        {
+            std::string nd = nodesDir(path);
+            if (fs::exists(nd)) {
+                for (const auto& e : fs::directory_iterator(nd)) {
+                    std::string fn = e.path().filename().u8string();
+                    if (fn.size() > 5 && fn.substr(fn.size() - 5) == ".meta") {
+                        // Parse simple JSON for x, y, name
+                        std::ifstream mf(e.path());
+                        std::string mc((std::istreambuf_iterator<char>(mf)),
+                                       std::istreambuf_iterator<char>());
+                        auto extract = [&](const std::string& field) -> std::string {
+                            size_t fp = mc.find("\"" + field + "\"");
+                            if (fp == std::string::npos) return "";
+                            size_t colon = mc.find(':', fp);
+                            if (colon == std::string::npos) return "";
+                            size_t q1 = mc.find('"', colon);
+                            if (q1 == std::string::npos) {
+                                size_t comma = mc.find(',', colon + 1);
+                                size_t brace = mc.find('}', colon + 1);
+                                size_t end = (comma != std::string::npos && brace != std::string::npos)
+                                              ? std::min(comma, brace) : brace;
+                                if (end == std::string::npos) return "";
+                                return ic::trim(mc.substr(colon + 1, end - colon - 1));
+                            }
+                            size_t q2 = mc.find('"', q1 + 1);
+                            if (q2 == std::string::npos) return "";
+                            return mc.substr(q1 + 1, q2 - q1 - 1);
+                        };
+                        std::string uuid = extract("uuid");
+                        if (uuid.empty()) continue;
+                        auto node = canvas.getNode(uuid);
+                        if (!node) continue;
+                        std::string xStr = extract("x");
+                        std::string yStr = extract("y");
+                        std::string wStr = extract("width");
+                        std::string hStr = extract("height");
+                        if (!xStr.empty()) node->rect.x = std::stod(xStr);
+                        if (!yStr.empty()) node->rect.y = std::stod(yStr);
+                        if (!wStr.empty()) node->rect.width = std::stod(wStr);
+                        if (!hStr.empty()) node->rect.height = std::stod(hStr);
+                        std::string mName = extract("name");
+                        if (!mName.empty()) node->name = mName;
+                    }
+                }
+            }
+        }
+
         return true;
     }
     catch (const std::exception& e) {
@@ -343,6 +392,36 @@ std::string JsonStorage::nodeTextPath(const std::string& canvasPath,
 
 std::string JsonStorage::manifestPath(const std::string& canvasPath) {
     return canvasPath + "/manifest.json";
+}
+
+bool JsonStorage::saveNode(const Node* node, const std::string& canvasPath) {
+    try {
+        fs::create_directories(nodesDir(canvasPath));
+        std::ofstream nf(nodeTextPath(canvasPath, node->uuid) + ".meta");
+        if (!nf.is_open()) return false;
+        nf << "{\n";
+        nf << "  \"uuid\": \"" << node->uuid << "\",\n";
+        nf << "  \"name\": \"" << node->name << "\",\n";
+        nf << "  \"parentId\": \"" << node->parentId << "\",\n";
+        nf << "  \"x\": " << node->rect.x << ",\n";
+        nf << "  \"y\": " << node->rect.y << ",\n";
+        nf << "  \"width\": " << node->rect.width << ",\n";
+        nf << "  \"height\": " << node->rect.height << ",\n";
+        nf << "  \"zoomLevel\": " << node->zoomLevel << ",\n";
+        nf << "  \"tag\": \"" << node->tag << "\",\n";
+        nf << "  \"hasFrame\": " << (node->hasFrame ? "true" : "false") << "\n";
+        nf << "}\n";
+
+        // Also update text
+        std::ofstream tf(nodeTextPath(canvasPath, node->uuid));
+        if (tf.is_open()) tf << node->text;
+
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Error saving node: " << e.what() << "\n";
+        return false;
+    }
 }
 
 } // namespace ic

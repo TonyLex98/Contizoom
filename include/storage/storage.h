@@ -8,6 +8,7 @@
 namespace ic {
 
 class Canvas;
+class Node;
 
 // Abstract storage interface
 class IStorage {
@@ -28,6 +29,9 @@ public:
 
     // List all saved canvases in a directory
     virtual std::vector<std::string> listCanvases(const std::string& dir) const = 0;
+
+    // Save a single node (incremental save) — returns true if supported
+    virtual bool saveNode(const Node* node, const std::string& canvasPath) = 0;
 };
 
 } // namespace ic

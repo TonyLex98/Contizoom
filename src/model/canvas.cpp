@@ -728,6 +728,11 @@ void Canvas::notifyChanged() {
     if (changed_) changed_();
 }
 
+void Canvas::notifyChanged(const std::string& uuid) {
+    if (changed_) changed_();
+    if (nodeChanged_) nodeChanged_(uuid);
+}
+
 Rect Canvas::computeWorldRect(const std::string& uuid) const {
     auto it = nodes_.find(uuid);
     if (it == nodes_.end()) return Rect{};

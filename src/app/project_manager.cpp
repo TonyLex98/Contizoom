@@ -57,7 +57,20 @@ std::string ProjectManager::createProject(const std::string& name) {
     info.name = name;
     info.path.clear(); // Unsaved
 
-    // Connect dirty callback: save immediately if path is set
+    canvas->onNodeChanged([this, uuid](const std::string& nodeUuid) {
+        auto it = canvases_.find(uuid);
+        if (it == canvases_.end()) return;
+        auto pIt = std::find_if(projects_.begin(), projects_.end(),
+            [&](const ProjectInfo& p) { return p.uuid == uuid; });
+        if (pIt == projects_.end()) return;
+        pIt->modifiedAt = std::time(nullptr);
+        // Incremental save: just the changed node
+        if (!pIt->path.empty() && storage_) {
+            auto node = it->second->getNode(nodeUuid);
+            if (node) storage_->saveNode(node.get(), pIt->path);
+        }
+    });
+
     canvas->onChanged([this, uuid]() {
         auto it = canvases_.find(uuid);
         if (it == canvases_.end()) return;
@@ -66,12 +79,8 @@ std::string ProjectManager::createProject(const std::string& name) {
         if (pIt == projects_.end()) return;
         pIt->dirty = true;
         pIt->modifiedAt = std::time(nullptr);
-        // Auto-save if project has a path
-        if (!pIt->path.empty() && storage_) {
-            storage_->saveCanvas(*(it->second), pIt->path);
-            pIt->dirty = false;
-        }
     });
+
     info.dirty = false;
     info.createdAt = canvas->createdAt;
     info.modifiedAt = info.createdAt;
@@ -99,6 +108,20 @@ std::string ProjectManager::openProject(const std::string& path) {
     std::string uuid = generateProjectUuid();
     canvas->modifiedAt = std::time(nullptr);
 
+    canvas->onNodeChanged([this, uuid](const std::string& nodeUuid) {
+        auto it = canvases_.find(uuid);
+        if (it == canvases_.end()) return;
+        auto pIt = std::find_if(projects_.begin(), projects_.end(),
+            [&](const ProjectInfo& p) { return p.uuid == uuid; });
+        if (pIt == projects_.end()) return;
+        pIt->modifiedAt = std::time(nullptr);
+        // Incremental save: just the changed node
+        if (!pIt->path.empty() && storage_) {
+            auto node = it->second->getNode(nodeUuid);
+            if (node) storage_->saveNode(node.get(), pIt->path);
+        }
+    });
+
     canvas->onChanged([this, uuid]() {
         auto it = canvases_.find(uuid);
         if (it == canvases_.end()) return;
@@ -107,11 +130,6 @@ std::string ProjectManager::openProject(const std::string& path) {
         if (pIt == projects_.end()) return;
         pIt->dirty = true;
         pIt->modifiedAt = std::time(nullptr);
-        // Auto-save if project has a path
-        if (!pIt->path.empty() && storage_) {
-            storage_->saveCanvas(*(it->second), pIt->path);
-            pIt->dirty = false;
-        }
     });
 
     ProjectInfo info;

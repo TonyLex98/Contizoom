@@ -100,6 +100,43 @@ InputResult InputHandler::handleMouseMove(const InputEvent& event) {
         return InputResult::Handled;
     }
 
+    // Pending click → drag если мышь сдвинулась
+    if (pendingClick_.active) {
+        int dx = std::abs(event.mouseX - pendingClick_.screenX);
+        int dy = std::abs(event.mouseY - pendingClick_.screenY);
+        if (dx + dy > 2) {
+            pendingClick_.active = false;
+            draggingNodes_ = true;
+            dragStates_.clear();
+            for (auto& [uuid, n] : canvas_.allNodes()) {
+                if (n->state != NodeState::Selected) continue;
+                DragState ds;
+                auto parent = canvas_.getNode(n->parentId);
+                if (parent) {
+                    ds.isChild = true;
+                    ds.startRelX = n->rect.x;
+                    ds.startRelY = n->rect.y;
+                    ds.startScreenX = pendingClick_.screenX;
+                    ds.startScreenY = pendingClick_.screenY;
+                    auto pit = screenRects_.find(parent->uuid);
+                    if (pit != screenRects_.end()) {
+                        ds.parentSrW = pit->second.w;
+                        ds.parentSrH = pit->second.h;
+                    }
+                    ds.parentRectW = parent->rect.width;
+                    ds.parentRectH = parent->rect.height;
+                } else {
+                    ds.isChild = false;
+                    ds.startRelX = n->rect.x;
+                    ds.startRelY = n->rect.y;
+                    ds.startScreenX = pendingClick_.screenX;
+                    ds.startScreenY = pendingClick_.screenY;
+                }
+                dragStates_[n->uuid] = ds;
+            }
+        }
+    }
+
     if (draggingNodes_) {
         std::set<std::string> moved;
 
@@ -184,9 +221,14 @@ InputResult InputHandler::handleMouseDown(const InputEvent& event) {
                               node && node->uuid == lastClickedNode_.value_or("");
 
         if (isDoubleClick && node) {
-            // Double click: выбрать и редактировать
+            // Double click: выбрать, редактировать имя или текст по позиции клика
             selectNode(node->uuid, event.mods.shift);
-            startEditing(node->uuid);
+            auto pit = screenRects_.find(node->uuid);
+            if (pit != screenRects_.end()) {
+                bool onHeader = (event.mouseY <= pit->second.y + 1);
+                if (onHeader) startEditingName(node->uuid);
+                else startEditing(node->uuid);
+            }
             lastClickTime_ = 0;
             mouseDown_.left = true;
             lastScreenX_ = event.mouseX;
@@ -198,11 +240,9 @@ InputResult InputHandler::handleMouseDown(const InputEvent& event) {
             return InputResult::Handled;
         }
 
-        // Если редактируем и кликаем в другое место — сохраняем и выходим
+        // Если редактируем и кликаем — сохраняем текущее редактирование
         if (editingNode_) {
-            if (!node || node->uuid != *editingNode_) {
-                commitEdit();
-            }
+            commitEdit();
         }
 
         // Single click
@@ -211,39 +251,11 @@ InputResult InputHandler::handleMouseDown(const InputEvent& event) {
             node->state = NodeState::InConnection;
         } else if (node) {
             if (node->state == NodeState::Selected) {
-                // Клик на выбранную: перетаскивание
-                draggingNodes_ = true;
-
-                // Capture drag state for ALL selected nodes
-                dragStates_.clear();
-                for (auto& [uuid, n] : canvas_.allNodes()) {
-                    if (n->state != NodeState::Selected) continue;
-
-                    DragState ds;
-                    auto parent = canvas_.getNode(n->parentId);
-
-                    if (parent) {
-                        ds.isChild = true;
-                        ds.startRelX = n->rect.x;
-                        ds.startRelY = n->rect.y;
-                        ds.startScreenX = event.mouseX;
-                        ds.startScreenY = event.mouseY;
-                        auto pit = screenRects_.find(parent->uuid);
-                        if (pit != screenRects_.end()) {
-                            ds.parentSrW = pit->second.w;
-                            ds.parentSrH = pit->second.h;
-                        }
-                        ds.parentRectW = parent->rect.width;
-                        ds.parentRectH = parent->rect.height;
-                    } else {
-                        ds.isChild = false;
-                        ds.startRelX = n->rect.x;
-                        ds.startRelY = n->rect.y;
-                        ds.startScreenX = event.mouseX;
-                        ds.startScreenY = event.mouseY;
-                    }
-                    dragStates_[n->uuid] = ds;
-                }
+                // Pending click: если мышь не сдвинется — клик (edit), если сдвинется — drag (move)
+                pendingClick_.active = true;
+                pendingClick_.screenX = event.mouseX;
+                pendingClick_.screenY = event.mouseY;
+                pendingClick_.nodeUuid = node->uuid;
             } else {
                 // Клик на невыбранную: снять выделение и редактирование
                 if (editingNode_) commitEdit();
@@ -276,8 +288,24 @@ InputResult InputHandler::handleMouseDown(const InputEvent& event) {
 }
 
 InputResult InputHandler::handleMouseUp(const InputEvent& event) {
-    // При отпускании — финальное разрешение всех пересечений в родителях
     if (event.button == 0) {
+        // Pending click → edit (если не конвертировался в drag)
+        if (pendingClick_.active) {
+            pendingClick_.active = false;
+            auto node = canvas_.getNode(pendingClick_.nodeUuid);
+            if (node) {
+                auto pit = screenRects_.find(node->uuid);
+                if (pit != screenRects_.end()) {
+                    bool onHeader = (event.mouseY <= pit->second.y + 1);
+                    if (onHeader) startEditingName(node->uuid);
+                    else startEditing(node->uuid);
+                }
+            }
+            mouseDown_.left = false;
+            return InputResult::Handled;
+        }
+
+        // При отпускании — финальное разрешение всех пересечений в родителях
         // Собираем уникальных родителей выбранных нод
         std::set<std::string> parents;
         for (auto& [_, n] : canvas_.allNodes()) {
@@ -287,6 +315,13 @@ InputResult InputHandler::handleMouseUp(const InputEvent& event) {
         }
         for (const auto& pId : parents) {
             canvas_.resolveOverlaps(pId);
+        }
+
+        // Notify changed for all selected nodes (incremental save)
+        for (auto& [_, n] : canvas_.allNodes()) {
+            if (n->state == NodeState::Selected) {
+                canvas_.notifyChanged(n->uuid);
+            }
         }
 
         draggingNodes_ = false;

@@ -108,6 +108,14 @@ private:
     };
     std::map<std::string, DragState> dragStates_;
 
+    // Pending click: distinguish single-click (edit) from drag (move)
+    struct PendingClick {
+        bool active = false;
+        int screenX = 0, screenY = 0;
+        std::string nodeUuid;
+    };
+    PendingClick pendingClick_;
+
     // Inline text editing
     std::optional<std::string> editingNode_; // UUID of node being edited
     std::string editText_; // Current text being edited

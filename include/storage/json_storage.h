@@ -44,6 +44,9 @@ public:
     bool saveNodeText(const std::string& canvasPath, const std::string& uuid,
                       const std::string& text);
 
+    // Incremental node save (metadata only)
+    bool saveNode(const Node* node, const std::string& canvasPath) override;
+
     // Load just the node text file
     std::string loadNodeText(const std::string& canvasPath,
                              const std::string& uuid) const;
