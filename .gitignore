@@ -1,0 +1,11 @@
+build/
+*.exe
+*.lib
+*.pdb
+*.ilk
+*.sdf
+*.opensdf
+*.vcxproj.user
+*.suo
+.vs/
+data/
