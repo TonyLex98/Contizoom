@@ -309,7 +309,7 @@ InputResult InputHandler::handleMouseUp(const InputEvent& event) {
     return InputResult::Handled;
 }
 
- InputResult InputHandler::handleMouseScroll(const InputEvent& event) {
+  InputResult InputHandler::handleMouseScroll(const InputEvent& event) {
     double vp = canvas_.viewport_.textScale;
     double factor = (event.scrollY > 0) ? 1.15 : 1.0 / 1.15;
     double newScale = std::max(0.1, std::min(5.0, vp * factor));
@@ -409,6 +409,9 @@ void InputHandler::createNodeAtCursor() {
             node->autoResize();
             selectNode(uuid);
             startEditing(uuid);
+            if (!parentId.empty()) {
+                canvas_.resolveOverlaps(parentId);
+            }
         }
     }
 }

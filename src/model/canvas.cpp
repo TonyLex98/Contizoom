@@ -179,6 +179,8 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
     double marginY = 2.0; // margin от нижнего края
 
     bool resolved = false;
+    // Адаптивный зазор: пропорционально размеру родителя, минимум 2.0, максимум 15.0
+    double gap = std::max(2.0, std::min(15.0, std::max(parent->rect.width, parent->rect.height) * 0.06));
 
     // Шаг 1: Выталкиваем детей из текстовой зоны
     for (const auto& cid : parent->childrenUuids) {
@@ -190,7 +192,7 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
         }
     }
 
-    // Шаг 2: Разрешаем пересечения сиблингов (итеративно)
+    // Шаг 2: Разрешаем пересечения и enforce минимального gap между сиблингами (итеративно)
     for (int iter = 0; iter < 50; ++iter) {
         bool anyOverlap = false;
 
@@ -207,11 +209,16 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
                 double bx1 = b->rect.x, by1 = b->rect.y;
                 double bx2 = b->rect.x + b->rect.width, by2 = b->rect.y + b->rect.height;
 
-                if (ax2 <= bx1 || ax1 >= bx2 || ay2 <= by1 || ay1 >= by2) continue;
+                // Проверяем с учётом gap: если зазор меньше gap — тоже разводим
+                double ax1g = ax1 - gap / 2.0, ay1g = ay1 - gap / 2.0;
+                double ax2g = ax2 + gap / 2.0, ay2g = ay2 + gap / 2.0;
+                double bx1g = bx1 - gap / 2.0, by1g = by1 - gap / 2.0;
+                double bx2g = bx2 + gap / 2.0, by2g = by2 + gap / 2.0;
+
+                if (ax2g <= bx1g || ax1g >= bx2g || ay2g <= by1g || ay1g >= by2g) continue;
 
                 double overlapX = std::min(ax2 - bx1, bx2 - ax1);
                 double overlapY = std::min(ay2 - by1, by2 - ay1);
-                double gap = 2.0;
 
                 if (overlapX < overlapY) {
                     // Разделяем по X
@@ -235,10 +242,12 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
                         a->rect.y += (overlapY + gap) / 2.0;
                         b->rect.y -= (overlapY + gap) / 2.0;
                     }
-                    // Не поднимать выше текстовой зоны
-                    if (a->rect.y < textZoneY) a->rect.y = textZoneY;
-                    if (b->rect.y < textZoneY) b->rect.y = textZoneY;
                 }
+                // Clamp внутри цикла: не поднимать выше текста, не вылетать влево
+                if (a->rect.y < textZoneY) a->rect.y = textZoneY;
+                if (b->rect.y < textZoneY) b->rect.y = textZoneY;
+                if (a->rect.x < marginX) a->rect.x = marginX;
+                if (b->rect.x < marginX) b->rect.x = marginX;
                 anyOverlap = true;
             }
         }
