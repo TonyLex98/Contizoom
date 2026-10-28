@@ -1,5 +1,7 @@
 #include "view/console_renderer.h"
+#include "i18n/i18n.h"
 #include "util/utf8.h"
+#include "view/labels.h"
 
 #include <algorithm>
 #include <cmath>
@@ -284,13 +286,10 @@ void ConsoleRenderer::drawMarker(const Node& node, const ScreenRect& sr, NodeSta
     // collapsed box doesn't look like empty canvas. Clusters don't: one
     // member's name would mislabel the others.
     if (isCluster || node.name.empty()) return;
-    int x = cx + 1;
-    int written = 0;
-    utf8::forEach(node.name, [&](char32_t cp) {
-        if (written >= 24 || !canvasArea_.contains(x, cy) || buffer_.charAt(x, cy) != L' ') return;
-        buffer_.put(x++, cy, utf8::toCell(cp), color::Gray);
-        ++written;
-    });
+    // As much of the name as fits in the blank cells (at most 24) there.
+    int room = 0;
+    while (room < 24 && canvasArea_.contains(cx + 1 + room, cy) && buffer_.charAt(cx + 1 + room, cy) == L' ') ++room;
+    buffer_.text(cx + 1, cy, node.name, color::Gray, room);
 }
 
 void ConsoleRenderer::drawNode(const Node& node, const ScreenRect& sr, const UiState& ui, bool isCluster) {
@@ -352,9 +351,8 @@ void ConsoleRenderer::drawNode(const Node& node, const ScreenRect& sr, const UiS
             buffer_.text(b.x + 1, y++, line, st.text, innerW);
         }
     } else if (b.w >= 3 && b.h >= 3) {
-        // Hint that there is content: its first character.
-        size_t pos = 0;
-        buffer_.put(b.x + 1, b.y + 1, utf8::toCell(utf8::decode(node.text, pos)), st.text);
+        // Hint that there is content: its first character (which may be wide).
+        buffer_.text(b.x + 1, b.y + 1, utf8::prefix(node.text, 1), st.text, innerW);
     }
 }
 
@@ -367,7 +365,7 @@ void ConsoleRenderer::drawNodeName(const Node& node, const ScreenRect& sr, const
     if (innerW < 1 || b.h < 2) return;
 
     const NodeState state = ui.stateOf(node.uuid);
-    const int len = std::min(utf8::length(node.name), innerW);
+    const int len = std::min(utf8::width(node.name), innerW);
     const int start = b.x + 1 + (innerW - len) / 2;
     buffer_.text(start, b.y, node.name, styleFor(state).name, len);
 }
@@ -452,7 +450,7 @@ void ConsoleRenderer::drawConnectionLabel(const Connection& conn, const ScreenRe
     const int mx = (pts[best].first + pts[best + 1].first) / 2;
     const int my = (pts[best].second + pts[best + 1].second) / 2;
     const bool horizontal = pts[best].second == pts[best + 1].second;
-    const int len = utf8::length(conn.name);
+    const int len = utf8::width(conn.name);
     const int x = horizontal ? mx - len / 2 : mx + 1;
     const int y = horizontal ? my - 1 : my;  // above a horizontal line, beside a vertical one
 
@@ -500,19 +498,14 @@ void ConsoleRenderer::drawNodeEditor(const NodeEditor& editor) {
 
     if (editor.editingName) {
         // One-line field over the header row, as wide as the text needs.
-        const int len = utf8::length(editor.text);
+        const int len = utf8::width(editor.text);
         const int w = std::min(std::max({b.w, len + 4, 16}), area.width());
         const int x = std::clamp(b.x, area.left, area.right - w + 1);
         const int y = std::clamp(b.y, area.top, area.bottom);
         buffer_.fill(x, y, w, 1, L' ', attr);
         buffer_.put(x, y, L'[', attr);
         buffer_.put(x + w - 1, y, L']', attr);
-        const int fieldW = w - 3;
-        const int first = std::max(0, editor.cursorCol - fieldW + 1);  // keep the cursor in view
-        buffer_.text(x + 2, y, editor.text.substr(utf8::byteOffset(editor.text, first)), attr, fieldW);
-        const int cursorX = x + 2 + editor.cursorCol - first;
-        if (buffer_.charAt(cursorX, y) == L' ') buffer_.put(cursorX, y, L'_', color::Inverse);
-        else buffer_.setAttr(cursorX, y, color::Inverse);
+        drawField(x + 2, y, w - 3, editor.text, editor.cursorCol, attr);
         editorRect_ = ScreenRect{static_cast<double>(x), static_cast<double>(y), static_cast<double>(w), 1.0};
         return;
     }
@@ -522,14 +515,17 @@ void ConsoleRenderer::drawNodeEditor(const NodeEditor& editor) {
     // box's top-left and kept on screen. Scrolls to follow the cursor.
     const auto lines = splitLines(editor.text);
     int maxLen = 0;
-    for (const auto& l : lines) maxLen = std::max(maxLen, utf8::length(l));
+    for (const auto& l : lines) maxLen = std::max(maxLen, utf8::width(l));
     const int w = std::min(std::max(maxLen + 4, 32), area.width());
     const int h = std::min(std::max(static_cast<int>(lines.size()) + 2, 4), area.height());
     const int x = std::clamp(b.x, area.left, area.right - w + 1);
     const int y = std::clamp(b.y, area.top, area.bottom - h + 1);
     const int innerW = w - 2, innerH = h - 2;
-    const int firstCol = std::max(0, editor.cursorCol - innerW + 1);
     const int firstRow = std::max(0, editor.cursorRow - innerH + 1);
+    // Horizontal scroll in cells, so the cursor stays visible in wide text.
+    const std::string& cursorLine = lines[static_cast<size_t>(std::clamp(editor.cursorRow, 0, static_cast<int>(lines.size()) - 1))];
+    const int cursorCells = utf8::widthOfPrefix(cursorLine, editor.cursorCol);
+    const int firstCells = std::max(0, cursorCells - innerW + 1);
 
     buffer_.fill(x, y, w, h, L' ', attr);
     for (int cx = x + 1; cx < x + w - 1; ++cx) {
@@ -544,13 +540,14 @@ void ConsoleRenderer::drawNodeEditor(const NodeEditor& editor) {
     buffer_.put(x + w - 1, y, L'╗', attr);
     buffer_.put(x, y + h - 1, L'╚', attr);
     buffer_.put(x + w - 1, y + h - 1, L'╝', attr);
-    buffer_.text(x + 2, y, " text ", color::make(color::BrightYellow, color::Blue), w - 4);
+    buffer_.text(x + 2, y, std::string(" ") + tr(Msg::EditorTextTitle) + " ",
+                 color::make(color::BrightYellow, color::Blue), w - 4);
 
     for (int row = 0; row < innerH && firstRow + row < static_cast<int>(lines.size()); ++row) {
         const std::string& l = lines[static_cast<size_t>(firstRow + row)];
-        buffer_.text(x + 1, y + 1 + row, l.substr(utf8::byteOffset(l, firstCol)), attr, innerW);
+        buffer_.text(x + 1, y + 1 + row, l.substr(utf8::fitWidth(l, firstCells).size()), attr, innerW);
     }
-    const int cx = x + 1 + editor.cursorCol - firstCol;
+    const int cx = x + 1 + cursorCells - firstCells;
     const int cy = y + 1 + editor.cursorRow - firstRow;
     if (buffer_.charAt(cx, cy) == L' ') buffer_.put(cx, cy, L'_', color::Inverse);
     else buffer_.setAttr(cx, cy, color::Inverse);
@@ -586,7 +583,7 @@ void ConsoleRenderer::drawConnectionPreview(const Canvas& canvas, const UiState&
 }
 
 void ConsoleRenderer::drawConnectionEditor(const ConnectionEditor& editor) {
-    const int len = utf8::length(editor.text);
+    const int len = utf8::width(editor.text);
     const int w = std::max(10, len + 4);
     const int x = editor.screenX - w / 2;
     const int y = editor.screenY;
@@ -595,10 +592,20 @@ void ConsoleRenderer::drawConnectionEditor(const ConnectionEditor& editor) {
     buffer_.fill(x, y, w, 1, L' ', attr);
     buffer_.put(x, y, L'[', attr);
     buffer_.put(x + w - 1, y, L']', attr);
-    buffer_.text(x + 2, y, editor.text, attr, w - 3);
-    const int cursorX = std::clamp(x + 2 + editor.cursorCol, x + 2, x + w - 2);
-    if (buffer_.charAt(cursorX, y) == L' ') buffer_.put(cursorX, y, L'_', color::Inverse);
-    else buffer_.setAttr(cursorX, y, color::Inverse);
+    drawField(x + 2, y, w - 3, editor.text, editor.cursorCol, attr);
+}
+
+// One line of editable text in `cells` cells, scrolled so the cursor (a
+// code point index) is visible. Widths are in cells, so CJK text works.
+void ConsoleRenderer::drawField(int x, int y, int cells, const std::string& text, int cursor, uint16_t attr) {
+    const int cursorCells = utf8::widthOfPrefix(text, cursor);
+    int first = 0;  // first visible code point
+    while (first < cursor && cursorCells - utf8::widthOfPrefix(text, first) >= cells) ++first;
+    const int offset = utf8::widthOfPrefix(text, first);
+    buffer_.text(x, y, text.substr(utf8::byteOffset(text, first)), attr, cells);
+    const int cx = x + cursorCells - offset;
+    if (buffer_.charAt(cx, y) == L' ') buffer_.put(cx, y, L'_', color::Inverse);
+    else buffer_.setAttr(cx, y, color::Inverse);
 }
 
 // ====================================================================
@@ -618,48 +625,35 @@ void ConsoleRenderer::drawHud(const Canvas& canvas, const UiState& ui, const Hud
     char zoom[32];
     std::snprintf(zoom, sizeof(zoom), "%.*f", pct >= 10.0 ? 0 : pct >= 0.1 ? 2 : 4, pct);
 
-    std::string left = " Infinite Canvas  │  " + (hud.projectName.empty() ? std::string("Untitled") : hud.projectName);
-    if (hud.unsaved) left += " (not saved yet)";
-    left += "  │  zoom " + std::string(zoom) + "%  │  " + std::to_string(canvas.allNodes().size()) + " boxes";
+    std::string left = " Infinite Canvas  │  " + (hud.projectName.empty() ? std::string(tr(Msg::DefaultProject)) : hud.projectName);
+    left += std::string("  │  ") + tr(Msg::HudZoom) + " " + zoom + "%  │  " +
+            tr(Msg::Boxes, {std::to_string(canvas.allNodes().size())});
     buffer_.text(0, 0, left, barAttr, w);
 
     if (!hud.status.empty()) {
         const std::string status = " " + hud.status + " ";
-        const int len = utf8::length(status);
+        const int len = utf8::width(status);
         const uint16_t attr = hud.statusIsError ? color::make(color::White, color::Red)
                                                 : color::make(color::Black, color::Green);
         if (len < w) buffer_.text(w - len, 0, status, attr);
+        else buffer_.text(0, 0, status, attr, w);  // long messages win over the title
     }
 
     // Bottom bar: the keys that matter right now.
     std::string help;
     if (ui.nodeEditor.active && !ui.nodeEditor.editingName) {
-        help = " Enter: new line   Ctrl+Enter or click outside: save   Esc: cancel";
+        help = tr(Msg::HelpEditText);
     } else if (ui.nodeEditor.active || ui.connEditor.active) {
-        help = " Enter: save   Esc: cancel";
+        help = tr(Msg::HelpEditLine);
     } else if (!ui.connectionSource.empty()) {
-        help = " Release over another box to connect (over a • to pin the end)   Esc: cancel";
-    } else if (!ui.selectedConnection.empty()) {
-        std::string style = "arrow";
-        if (auto c = canvas.getConnection(ui.selectedConnection)) {
-            switch (c->type) {
-                case ConnType::Arrow: style = "arrow"; break;
-                case ConnType::DashedArrow: style = "dashed arrow"; break;
-                case ConnType::DottedArrow: style = "dotted arrow"; break;
-                case ConnType::Line: style = "line"; break;
-                case ConnType::DashedLine: style = "dashed line"; break;
-                case ConnType::DottedLine: style = "dotted line"; break;
-            }
-        }
-        help = " Connection (" + style + "):   T style   V reverse   F2/Enter rename   X delete   "
-               "Right-click menu   Esc deselect";
+        help = tr(Msg::HelpConnecting);
+    } else if (auto c = canvas.getConnection(ui.selectedConnection)) {
+        help = tr(Msg::HelpConnection, {tr(styleLabel(c->type))});
     } else {
-        help = " N / dbl-click empty: new box   Dbl-click edit   F2 rename   Drag move   Corner resize   Drag • connect   "
-               "Tab/Shift+Tab un/nest   F frame   X delete   Ctrl+Z undo   Wheel zoom   WASD pan   0 fit   "
-               "Shift+drag select   Right-click menu   Ctrl+Q quit";
+        help = tr(Msg::HelpDefault);
     }
     buffer_.fill(0, bottom, w, 1, L' ', color::make(color::Gray, color::Black));
-    buffer_.text(0, bottom, help, color::DarkGray, w);
+    buffer_.text(1, bottom, help, color::DarkGray, w - 1);
 }
 
 void ConsoleRenderer::drawSidebar(const Canvas& canvas, const UiState& ui) {
@@ -670,10 +664,10 @@ void ConsoleRenderer::drawSidebar(const Canvas& canvas, const UiState& ui) {
     buffer_.fill(0, 1, sideW, h - 2, L' ', color::Default);
     for (int y = 1; y < h - 1; ++y) buffer_.put(sideW - 1, y, L'│', color::DarkGray);
 
-    buffer_.text(1, 1, "OUTLINE", color::BrightCyan);
+    buffer_.text(1, 1, tr(Msg::SidebarTitle), color::BrightCyan, sideW - 2);
     if (canvas.allNodes().empty()) {
-        buffer_.text(1, 3, "Empty canvas.", color::DarkGray);
-        buffer_.text(1, 4, "Press N to add a box.", color::DarkGray);
+        buffer_.text(1, 3, tr(Msg::SidebarEmpty), color::DarkGray, sideW - 2);
+        buffer_.text(1, 4, tr(Msg::SidebarEmptyHint), color::DarkGray, sideW - 2);
         return;
     }
     int row = 3;
@@ -690,12 +684,12 @@ void ConsoleRenderer::drawSidebarTree(const Canvas& canvas, const UiState& ui, c
 
         std::string label = node->name;
         if (label.empty()) label = firstLine(node->text);
-        if (label.empty()) label = "(untitled)";
+        if (label.empty()) label = tr(Msg::Untitled);
 
         const int x = 1 + std::min(indent, 6) * 2;
         const int avail = sideW - 1 - x - 2;  // keep clear of the border
         if (avail >= 3) {
-            if (utf8::length(label) > avail) label = utf8::prefix(label, avail - 1) + "…";
+            if (utf8::width(label) > avail) label = utf8::fitWidth(label, avail - 1) + "…";
             const bool selected = ui.isSelected(node->uuid);
             const wchar_t bullet = selected ? L'►' : node->childrenUuids.empty() ? L'·' : L'▪';
             const uint16_t attr = selected ? color::BrightYellow : color::Gray;

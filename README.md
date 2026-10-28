@@ -66,6 +66,9 @@ picture on Linux.</sub>
 - **Resize** a selected box by its corners. Its whole subtree scales with it, and a box can't
   be shrunk below what its children need.
 - **Outline sidebar** with the full tree. Click an entry to fly to that box.
+- **Five languages**: English, Русский, 中文, Français, Español. The language follows the system
+  and can be switched at runtime from the menu or with `--lang`. Chinese text is laid out in
+  double-width console cells.
 - **Undo / redo** for every edit (`Ctrl+Z` / `Ctrl+Y`). A drag or resize is one step.
 - **Context menus.** Right-click a box, a line or empty canvas.
 - **Safe storage.** A project is saved automatically from its first edit on, so there is no
@@ -124,9 +127,26 @@ infinite_canvas <project.canvas>     open a project
 infinite_canvas -n <name>            start a new project
 infinite_canvas --snapshot <out.txt> [project.canvas] [--size WxH]
                                      render a project (default: the demo) to a text file
+infinite_canvas --lang en|ru|zh|fr|es ...   interface language
 ```
 
-Projects are stored in `%USERPROFILE%\.infinite_canvas\projects`.
+Projects are stored in `%USERPROFILE%\.infinite_canvas\projects`. The chosen language is kept in
+`%USERPROFILE%\.infinite_canvas\settings.json`.
+
+## Languages
+
+All interface text lives in one catalog, [`include/i18n/messages.def`](include/i18n/messages.def).
+Each entry holds a key and its translations side by side:
+
+```cpp
+IC_MSG(StatusSaved, "Saved to {0}", "Сохранено: {0}", "已保存到 {0}", "Enregistré dans {0}", "Guardado en {0}")
+```
+
+The same X-macro list generates the `Msg` enum and the lookup table, so a key can't exist
+without its text, and an entry with a missing translation doesn't compile. Code asks for
+`tr(Msg::StatusSaved, {path})` and never contains user-facing literals. A test checks that every
+translation keeps the same `{n}` placeholders as the English text. To add a language, add an
+enum value and a native name, then give every entry one more argument.
 
 ## Project format
 

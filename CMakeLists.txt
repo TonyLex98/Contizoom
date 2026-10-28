@@ -65,6 +65,7 @@ endif()
 # Platform independent, so it builds and is tested on any OS.
 # ----------------------------------------------------------------------------
 add_library(infinite_canvas_core STATIC
+    src/i18n/i18n.cpp
     src/util/file.cpp
     src/util/json.cpp
     src/util/process.cpp
@@ -77,6 +78,7 @@ add_library(infinite_canvas_core STATIC
     src/input/handler.cpp
     src/input/history.cpp
     src/app/project_manager.cpp
+    src/app/settings.cpp
     src/app/demo.cpp
 )
 target_include_directories(infinite_canvas_core PUBLIC include)
@@ -115,6 +117,7 @@ if(IC_BUILD_TESTS)
         tests/test_input.cpp
         tests/test_history.cpp
         tests/test_project.cpp
+        tests/test_i18n.cpp
     )
     target_link_libraries(ic_tests PRIVATE infinite_canvas_core)
     add_test(NAME unit_tests COMMAND ic_tests)

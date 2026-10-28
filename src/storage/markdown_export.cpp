@@ -1,4 +1,5 @@
 #include "storage/markdown_export.h"
+#include "i18n/i18n.h"
 #include "model/canvas.h"
 
 namespace ic {
@@ -8,7 +9,7 @@ namespace {
 std::string titleOf(const Node& n) {
     if (!n.name.empty()) return n.name;
     const std::string first = n.text.substr(0, n.text.find('\n'));
-    return first.empty() ? "(untitled)" : first;
+    return first.empty() ? std::string(tr(Msg::Untitled)) : first;
 }
 
 void writeNode(std::string& out, const Canvas& canvas, const Node& node, int level) {
@@ -45,12 +46,12 @@ void writeNode(std::string& out, const Canvas& canvas, const Node& node, int lev
 }  // namespace
 
 std::string exportMarkdown(const Canvas& canvas) {
-    std::string out = "# " + (canvas.canvasName.empty() ? std::string("Untitled") : canvas.canvasName) + "\n\n";
+    std::string out = "# " + (canvas.canvasName.empty() ? std::string(tr(Msg::DefaultProject)) : canvas.canvasName) + "\n\n";
 
     for (const auto& root : canvas.getChildren("")) writeNode(out, canvas, *root, 0);
 
     if (!canvas.allConnections().empty()) {
-        out += "## Connections\n\n";
+        out += std::string("## ") + tr(Msg::Connections) + "\n\n";
         for (const auto& [_, c] : canvas.allConnections()) {
             auto from = canvas.getNode(c->fromUuid);
             auto to = canvas.getNode(c->toUuid);

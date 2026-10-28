@@ -1,10 +1,13 @@
 #include "app/app.h"
 #include "app/demo.h"
+#include "app/settings.h"
+#include "i18n/i18n.h"
 #include "model/canvas.h"
 #include "platform/popup_menu.h"
 #include "storage/json_storage.h"
 #include "util/clock.h"
 #include "util/path.h"
+#include "view/labels.h"
 
 #include <algorithm>
 #include <ctime>
@@ -28,6 +31,7 @@ enum MenuId {
     kUndo,
     kRedo,
     kFit,
+    kLanguage,
     kQuit,
     kProjectMenu,
     kNewBoxHere,
@@ -44,21 +48,9 @@ enum MenuId {
     kConnRename,
     kConnReverse,
     kConnDelete,
-    kConnStyle,      // opens the style submenu
-    kStyleBase = 100 // + ConnType
+    kConnStyle,       // opens the style submenu
+    kStyleBase = 100  // + ConnType
 };
-
-const char* styleName(ConnType t) {
-    switch (t) {
-        case ConnType::Arrow: return "Arrow  ──►";
-        case ConnType::DashedArrow: return "Dashed arrow  --►";
-        case ConnType::DottedArrow: return "Dotted arrow  ··►";
-        case ConnType::Line: return "Line  ───";
-        case ConnType::DashedLine: return "Dashed line  ---";
-        case ConnType::DottedLine: return "Dotted line  ···";
-    }
-    return "";
-}
 
 std::string formatTime(uint64_t unixSeconds) {
     if (unixSeconds == 0) return "";
@@ -76,21 +68,20 @@ std::string formatTime(uint64_t unixSeconds) {
 
 }  // namespace
 
-App::App() : projects_(std::make_unique<JsonStorage>()) {
-    placeholder_.canvasName = "No project open";
-}
+App::App() : projects_(std::make_unique<JsonStorage>()) {}
 
 App::~App() {
     projects_.flushAll();
 }
 
 void App::openDemo() {
+    // A fixed folder name, whatever the language, so there's only ever one.
     const std::string path = path::toUtf8(path::fromUtf8(ProjectManager::defaultProjectsDir()) / "Welcome.canvas");
     if (!projects_.openProject(path).empty()) return;
 
-    projects_.createProject("Welcome");
+    projects_.createProject(tr(Msg::DemoName));
     buildDemoCanvas(*projects_.activeCanvas());
-    if (!projects_.saveCurrent()) setStatus("Could not save the demo: " + projects_.lastError(), true);
+    if (!projects_.saveCurrent()) setStatus(tr(Msg::StatusDemoFailed, {projects_.lastError()}), true);
 }
 
 Canvas& App::currentCanvas() {
@@ -133,11 +124,8 @@ void App::setStatus(const std::string& text, bool error) {
 
 void App::render() {
     HudInfo hud;
-    if (const ProjectInfo* p = projects_.activeProject()) {
-        hud.projectName = p->name;
-    } else {
-        hud.projectName = "No project - right-click for the menu";
-    }
+    if (const ProjectInfo* p = projects_.activeProject()) hud.projectName = p->name;
+    else hud.projectName = tr(Msg::HudNoProject);
     hud.status = status_;
     hud.statusIsError = statusIsError_;
 
@@ -165,7 +153,7 @@ int App::run() {
     while (running_) {
         projects_.processAutoSave();
         if (std::string err = projects_.takeAutoSaveError(); !err.empty()) {
-            setStatus(err, true);
+            setStatus(tr(Msg::StatusAutoSaveFailed, {err}), true);
             render();
         }
         if (std::string w = projects_.takeWarning(); !w.empty()) {
@@ -216,13 +204,13 @@ void App::handle(InputResult result) {
     switch (result) {
         case InputResult::RequestQuit: running_ = false; break;
         case InputResult::RequestSave:
-            if (projects_.saveCurrent()) setStatus("Saved to " + projects_.activeProject()->displayPath());
-            else setStatus("Save failed: " + projects_.lastError(), true);
+            if (projects_.saveCurrent()) setStatus(tr(Msg::StatusSaved, {projects_.activeProject()->displayPath()}));
+            else setStatus(tr(Msg::StatusSaveFailed, {projects_.lastError()}), true);
             break;
         case InputResult::RequestNew:
-            projects_.createProject("Untitled");
+            projects_.createProject(tr(Msg::DefaultProject));
             bindHandler();
-            setStatus("New project - it saves itself as you work");
+            setStatus(tr(Msg::StatusNewProject));
             break;
         case InputResult::SidebarNodeClick:
             if (handler_) handler_->zoomToNode(handler_->sidebarClickedUuid());
@@ -247,21 +235,21 @@ void App::showContextMenu() {
 void App::showNodeMenu(int x, int y) {
     const bool single = ui_.selected.size() == 1;
     std::vector<MenuItem> items = {
-        MenuItem::item(kRename, "Rename", "F2", single),
-        MenuItem::item(kEditText, "Edit text", "E", single),
-        MenuItem::item(kNewChild, "New box inside, here", "N"),
-        MenuItem::item(kZoomTo, "Zoom to", "Enter"),
+        MenuItem::item(kRename, tr(Msg::MenuRename), "F2", single),
+        MenuItem::item(kEditText, tr(Msg::MenuEditText), "E", single),
+        MenuItem::item(kNewChild, tr(Msg::MenuNewChildHere), "N"),
+        MenuItem::item(kZoomTo, tr(Msg::MenuZoomTo), "Enter"),
         MenuItem::line(),
-        MenuItem::item(kFrame, "Wrap in frame", "F"),
-        MenuItem::item(kPromote, "Lift out of parent", "Tab"),
-        MenuItem::item(kDemote, "Nest into box above", "Shift+Tab"),
+        MenuItem::item(kFrame, tr(Msg::MenuFrame), "F"),
+        MenuItem::item(kPromote, tr(Msg::MenuPromote), "Tab"),
+        MenuItem::item(kDemote, tr(Msg::MenuDemote), "Shift+Tab"),
         MenuItem::line(),
-        MenuItem::item(kDelete, "Delete with contents", "X"),
+        MenuItem::item(kDelete, tr(Msg::MenuDeleteBox), "X"),
         MenuItem::line(),
-        MenuItem::item(kProjectMenu, "Project..."),
+        MenuItem::item(kProjectMenu, tr(Msg::MenuProjectSub)),
     };
     PopupMenu menu(input_, output_);
-    const std::string title = single ? "Box" : std::to_string(ui_.selected.size()) + " boxes";
+    const std::string title = single ? tr(Msg::TitleBox) : tr(Msg::Boxes, {std::to_string(ui_.selected.size())});
     switch (menu.choose(title, items, x, y, renderer_.width(), renderer_.height())) {
         case kRename: handler_->perform(Action::Rename); break;
         case kEditText: handler_->perform(Action::EditText); break;
@@ -281,16 +269,16 @@ void App::showNodeMenu(int x, int y) {
 
 void App::showConnectionMenu(int x, int y) {
     std::vector<MenuItem> items = {
-        MenuItem::item(kConnRename, "Rename", "F2"),
-        MenuItem::item(kConnStyle, "Style...", "T"),
-        MenuItem::item(kConnReverse, "Reverse direction", "V"),
+        MenuItem::item(kConnRename, tr(Msg::MenuRename), "F2"),
+        MenuItem::item(kConnStyle, tr(Msg::MenuStyle), "T"),
+        MenuItem::item(kConnReverse, tr(Msg::MenuReverse), "V"),
         MenuItem::line(),
-        MenuItem::item(kConnDelete, "Delete", "X"),
+        MenuItem::item(kConnDelete, tr(Msg::MenuDelete), "X"),
         MenuItem::line(),
-        MenuItem::item(kProjectMenu, "Project..."),
+        MenuItem::item(kProjectMenu, tr(Msg::MenuProjectSub)),
     };
     PopupMenu menu(input_, output_);
-    switch (menu.choose("Connection", items, x, y, renderer_.width(), renderer_.height())) {
+    switch (menu.choose(tr(Msg::TitleConnection), items, x, y, renderer_.width(), renderer_.height())) {
         case kConnRename: handler_->perform(Action::ConnectionRename); break;
         case kConnReverse: handler_->perform(Action::ConnectionReverse); break;
         case kConnDelete: handler_->perform(Action::ConnectionDelete); break;
@@ -300,10 +288,11 @@ void App::showConnectionMenu(int x, int y) {
             std::vector<MenuItem> styles;
             for (int t = 0; t <= static_cast<int>(ConnType::DashedLine); ++t) {
                 const auto type = static_cast<ConnType>(t);
-                styles.push_back(MenuItem::item(kStyleBase + t, styleName(type), type == conn->type ? "current" : ""));
+                const std::string label = std::string(styleSample(type)) + "  " + tr(styleLabel(type));
+                styles.push_back(MenuItem::item(kStyleBase + t, label, type == conn->type ? tr(Msg::HintCurrent) : ""));
             }
             render();
-            const int choice = menu.choose("Style", styles, x, y, renderer_.width(), renderer_.height());
+            const int choice = menu.choose(tr(Msg::TitleStyle), styles, x, y, renderer_.width(), renderer_.height());
             if (choice >= kStyleBase) handler_->setConnectionStyle(static_cast<ConnType>(choice - kStyleBase));
             break;
         }
@@ -319,30 +308,32 @@ void App::showProjectMenu(int x, int y, bool onCanvas) {
     const bool open = projects_.activeProject() != nullptr;
     std::vector<MenuItem> items;
     if (onCanvas && handler_) {
-        items.push_back(MenuItem::item(kNewBoxHere, "New box here", "Dbl-click"));
+        items.push_back(MenuItem::item(kNewBoxHere, tr(Msg::MenuNewBoxHere), tr(Msg::HintDblClick)));
         items.push_back(MenuItem::line());
     }
     const std::vector<MenuItem> projectItems = {
-        MenuItem::item(kNew, "New project", "Ctrl+N"),
-        MenuItem::item(kOpen, "Open project..."),
-        MenuItem::item(kSwitch, "Switch project...", "", projects_.projects().size() > 1),
+        MenuItem::item(kNew, tr(Msg::MenuNewProject), "Ctrl+N"),
+        MenuItem::item(kOpen, tr(Msg::MenuOpen)),
+        MenuItem::item(kSwitch, tr(Msg::MenuSwitch), "", projects_.projects().size() > 1),
         MenuItem::line(),
-        MenuItem::item(kSave, "Save now", "Ctrl+S", open),
-        MenuItem::item(kSaveAs, "Save a copy as...", "", open),
-        MenuItem::item(kRevert, "Revert to last save", "", open),
-        MenuItem::item(kExport, "Export as Markdown", "", open),
-        MenuItem::item(kClose, "Close project", "", open),
+        MenuItem::item(kSave, tr(Msg::MenuSave), "Ctrl+S", open),
+        MenuItem::item(kSaveAs, tr(Msg::MenuSaveCopy), "", open),
+        MenuItem::item(kRevert, tr(Msg::MenuRevert), "", open),
+        MenuItem::item(kExport, tr(Msg::MenuExport), "", open),
+        MenuItem::item(kClose, tr(Msg::MenuClose), "", open),
         MenuItem::line(),
-        MenuItem::item(kUndo, "Undo", "Ctrl+Z", handler_ && handler_->canUndo()),
-        MenuItem::item(kRedo, "Redo", "Ctrl+Y", handler_ && handler_->canRedo()),
-        MenuItem::item(kFit, "Fit view", "0", open),
+        MenuItem::item(kUndo, tr(Msg::MenuUndo), "Ctrl+Z", handler_ && handler_->canUndo()),
+        MenuItem::item(kRedo, tr(Msg::MenuRedo), "Ctrl+Y", handler_ && handler_->canRedo()),
+        MenuItem::item(kFit, tr(Msg::MenuFit), "0", open),
+        MenuItem::item(kLanguage, tr(Msg::MenuLanguage), i18n::nativeName(i18n::language())),
         MenuItem::line(),
-        MenuItem::item(kQuit, "Quit", "Ctrl+Q"),
+        MenuItem::item(kQuit, tr(Msg::MenuQuit), "Ctrl+Q"),
     };
     items.insert(items.end(), projectItems.begin(), projectItems.end());
 
     PopupMenu menu(input_, output_);
-    switch (menu.choose(onCanvas ? "Canvas" : "Project", items, x, y, renderer_.width(), renderer_.height())) {
+    const std::string title = tr(onCanvas ? Msg::TitleCanvas : Msg::TitleProject);
+    switch (menu.choose(title, items, x, y, renderer_.width(), renderer_.height())) {
         case kNewBoxHere: handler_->perform(Action::NewBoxHere); break;
         case kNew: handle(InputResult::RequestNew); break;
         case kOpen: openProjectDialog(x, y); break;
@@ -354,15 +345,15 @@ void App::showProjectMenu(int x, int y, bool onCanvas) {
             if (projects_.revert()) {
                 ui_ = UiState{};
                 if (handler_) handler_->clearHistory();
-                setStatus("Reverted to the last saved state");
+                setStatus(tr(Msg::StatusReverted));
             } else {
-                setStatus("Revert failed: " + projects_.lastError(), true);
+                setStatus(tr(Msg::StatusRevertFailed, {projects_.lastError()}), true);
             }
             break;
         case kExport: {
             std::string out;
-            if (projects_.exportMarkdown(out)) setStatus("Exported to " + out);
-            else setStatus("Export failed: " + projects_.lastError(), true);
+            if (projects_.exportMarkdown(out)) setStatus(tr(Msg::StatusExported, {out}));
+            else setStatus(tr(Msg::StatusExportFailed, {projects_.lastError()}), true);
             break;
         }
         case kClose:
@@ -374,36 +365,57 @@ void App::showProjectMenu(int x, int y, bool onCanvas) {
         case kFit:
             if (handler_) handler_->fitAll();
             break;
+        case kLanguage: languageDialog(x, y); break;
         case kQuit: handle(InputResult::RequestQuit); break;
         default: break;
     }
 }
 
+void App::languageDialog(int x, int y) {
+    std::vector<MenuItem> items;
+    for (int l = 0; l < static_cast<int>(i18n::Language::Count); ++l) {
+        const auto lang = static_cast<i18n::Language>(l);
+        // Each language in its own name, so it can be found in any UI language.
+        items.push_back(MenuItem::item(l, i18n::nativeName(lang), lang == i18n::language() ? "●" : ""));
+    }
+    render();
+    PopupMenu menu(input_, output_);
+    const int choice = menu.choose(tr(Msg::TitleLanguage), items, x, y, renderer_.width(), renderer_.height());
+    if (choice < 0) return;
+
+    const auto lang = static_cast<i18n::Language>(choice);
+    i18n::setLanguage(lang);
+    Settings settings = Settings::load();
+    settings.language = i18n::code(lang);
+    settings.save();
+    setStatus(tr(Msg::StatusLanguage, {i18n::nativeName(lang)}));
+}
+
 void App::openProjectDialog(int x, int y) {
     const auto list = projects_.listSavedProjects();
     if (list.empty()) {
-        setStatus("No saved projects in " + ProjectManager::defaultProjectsDir(), true);
+        setStatus(tr(Msg::StatusNoSaved, {ProjectManager::defaultProjectsDir()}), true);
         return;
     }
     std::vector<MenuItem> items;
     for (size_t i = 0; i < list.size(); ++i) {
         std::string hint = formatTime(list[i].modifiedAt);
-        if (list[i].nodeCount >= 0) hint += "  " + std::to_string(list[i].nodeCount) + " boxes";
+        if (list[i].nodeCount >= 0) hint += "  " + tr(Msg::Boxes, {std::to_string(list[i].nodeCount)});
         items.push_back(MenuItem::item(static_cast<int>(i), list[i].name, hint));
     }
     render();  // clear the previous menu
     PopupMenu menu(input_, output_);
-    const int choice = menu.choose("Open (recent first)", items, x, y, renderer_.width(), renderer_.height());
+    const int choice = menu.choose(tr(Msg::TitleOpen), items, x, y, renderer_.width(), renderer_.height());
     if (choice < 0) return;
 
     if (projects_.openProject(list[static_cast<size_t>(choice)].path).empty()) {
-        setStatus("Open failed: " + projects_.lastError(), true);
+        setStatus(tr(Msg::StatusOpenFailed, {projects_.lastError()}), true);
         return;
     }
     bindHandler();
     render();
     if (handler_) handler_->fitAll();
-    setStatus("Opened " + projects_.activeProject()->name);
+    setStatus(tr(Msg::StatusOpened, {projects_.activeProject()->name}));
 }
 
 void App::saveAsDialog() {
@@ -412,11 +424,12 @@ void App::saveAsDialog() {
 
     render();
     PopupMenu menu(input_, output_);
-    auto name = menu.prompt("Save a copy as - name", p->name + " copy", renderer_.width(), renderer_.height());
+    auto name = menu.prompt(tr(Msg::TitleSaveCopy), tr(Msg::CopyName, {p->name}), renderer_.width(),
+                            renderer_.height());
     if (!name || name->empty()) return;
 
-    if (projects_.saveAs(*name)) setStatus("Now working in " + projects_.activeProject()->displayPath());
-    else setStatus("Save failed: " + projects_.lastError(), true);
+    if (projects_.saveAs(*name)) setStatus(tr(Msg::StatusNowIn, {projects_.activeProject()->displayPath()}));
+    else setStatus(tr(Msg::StatusSaveFailed, {projects_.lastError()}), true);
 }
 
 void App::switchProjectDialog(int x, int y) {
@@ -427,7 +440,7 @@ void App::switchProjectDialog(int x, int y) {
     }
     render();
     PopupMenu menu(input_, output_);
-    const int choice = menu.choose("Switch to", items, x, y, renderer_.width(), renderer_.height());
+    const int choice = menu.choose(tr(Msg::TitleSwitch), items, x, y, renderer_.width(), renderer_.height());
     if (choice < 0) return;
     projects_.switchTo(list[static_cast<size_t>(choice)].uuid);
     bindHandler();

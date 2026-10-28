@@ -1,4 +1,5 @@
 #include "input/handler.h"
+#include "i18n/i18n.h"
 #include "util/clock.h"
 #include "util/utf8.h"
 
@@ -304,7 +305,7 @@ void InputHandler::perform(Action action) {
             const auto members = topLevelSelection();
             if (members.empty()) break;
             std::string frame;
-            edit([&] { frame = canvas_.createFrame(members, "Frame"); });
+            edit([&] { frame = canvas_.createFrame(members, tr(Msg::DefaultFrame)); });
             if (!frame.empty()) select(frame, false);
             break;
         }
@@ -417,7 +418,7 @@ void InputHandler::createBox() {
 
     std::string uuid;
     edit([&] {
-        uuid = canvas_.createNode("", r, "New box", parentId);
+        uuid = canvas_.createNode("", r, tr(Msg::DefaultBox), parentId);
         if (!uuid.empty() && !parentId.empty()) {
             canvas_.expandParentToFit(uuid, 2.0);
             canvas_.resolveOverlaps(parentId);
@@ -441,7 +442,7 @@ void InputHandler::createBoxAt(int screenX, int screenY, const std::string& pare
     }
     std::string uuid;
     edit([&] {
-        uuid = canvas_.createNode("", r, "New box", parent ? parentId : std::string());
+        uuid = canvas_.createNode("", r, tr(Msg::DefaultBox), parent ? parentId : std::string());
         if (!uuid.empty() && parent) {
             canvas_.expandParentToFit(uuid, 2.0);
             canvas_.resolveOverlaps(parentId);
@@ -916,7 +917,7 @@ void InputHandler::commitEdit() {
         if (ed.editingName) {
             node->name = ed.text;
             // Make room for the label.
-            node->rect.width = std::max(node->rect.width, static_cast<double>(utf8::length(ed.text) + 4));
+            node->rect.width = std::max(node->rect.width, static_cast<double>(utf8::width(ed.text) + 4));
         } else {
             node->text = ed.text;
             node->autoResize();

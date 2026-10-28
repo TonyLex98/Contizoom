@@ -90,6 +90,26 @@ with no inverse operation for each command.
 Commands are also exposed as `InputHandler::perform(Action)`, which the context menus use, so
 keys and menus can never behave differently.
 
+## Internationalization
+
+- **Catalog.** `i18n/messages.def` is an X-macro list,
+  `IC_MSG(Key, en, ru, zh, fr, es)`. `i18n.h` expands it into `enum class Msg`, and `i18n.cpp`
+  expands it into a `[Msg][Language]` table. Keys and texts can't drift apart, and a missing
+  translation is a compile error (wrong macro arity).
+- **API.** `tr(Msg)` returns UTF-8 text in the current language, and `tr(Msg, {args})` fills
+  `{0}`, `{1}`. Names of model enums (connection styles) are mapped in `view/labels.h`, so
+  neither the model nor i18n depends on the other.
+- **Choice of language.** `--lang`, then `settings.json`, then the system UI language
+  (`GetUserDefaultUILanguage` on Windows, `LC_ALL`/`LC_MESSAGES`/`LANG` elsewhere). Switching
+  from the menu takes effect on the next frame and is saved.
+- **Width, not length.** Layout measures text in console cells with `utf8::width`. CJK
+  characters take two cells: `CellBuffer` stores them as a Lead/Trail pair (overwriting either
+  half clears the other), and `ConsoleOutput` marks them with
+  `COMMON_LVB_LEADING_BYTE`/`TRAILING_BYTE`. Editor cursors stay in code points and are
+  converted to cells only when drawn.
+- **Content is not translated.** Box names and texts are user data. Only the welcome project is
+  built in the current language the first time it's created.
+
 ## Storage
 
 `JsonStorage` stores one directory per project and one file per node (see the README for the

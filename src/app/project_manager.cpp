@@ -1,4 +1,5 @@
 #include "app/project_manager.h"
+#include "i18n/i18n.h"
 #include "model/canvas.h"
 #include "storage/markdown_export.h"
 #include "util/clock.h"
@@ -112,8 +113,7 @@ void ProjectManager::acquireLock(const ProjectInfo& info) {
     unsigned long pid = 0;
     std::string token;
     if (readLock(lock, pid, token) && token != lockToken_ && process::isAlive(pid)) {
-        warning_ = "\"" + info.name + "\" seems to be open in another window too (process " + std::to_string(pid) +
-                   "); changes made in both will overwrite each other";
+        warning_ = tr(Msg::StatusLocked, {info.name, std::to_string(pid)});
     }
     std::error_code ec;
     if (!fs::is_directory(lock.parent_path(), ec)) return;  // not on disk yet
@@ -159,7 +159,7 @@ void ProjectManager::setupAutoSave(const std::string& uuid) {
         // First write, or wholesale change (undo/redo): everything.
         if (!p->onDisk || changes.full) {
             if (!p->onDisk && canvas.allNodes().empty() && canvas.allConnections().empty()) return;
-            if (!writeFull(*p, canvas)) autoSaveError_ = "Auto-save failed: " + lastError_;
+            if (!writeFull(*p, canvas)) autoSaveError_ = lastError_;
             return;
         }
 
@@ -178,7 +178,7 @@ void ProjectManager::setupAutoSave(const std::string& uuid) {
         ok = storage_->saveConfig(canvas, p->path) && ok;
 
         if (ok) p->modifiedAt = now;
-        else autoSaveError_ = "Auto-save failed: " + storage_->lastError();
+        else autoSaveError_ = storage_->lastError();
     });
 }
 
@@ -213,7 +213,7 @@ std::string ProjectManager::openProject(const std::string& path) {
         }
     }
     if (!storage_->isValid(path)) {
-        lastError_ = "Not a project: " + path;
+        lastError_ = tr(Msg::ErrNotAProject, {path});
         return "";
     }
     auto canvas = std::make_unique<Canvas>();
@@ -298,7 +298,7 @@ bool ProjectManager::revert() {
     Canvas* canvas = activeCanvas();
     if (!info || !canvas) return false;
     if (!info->onDisk) {
-        lastError_ = "nothing saved yet";
+        lastError_ = tr(Msg::ErrNothingSaved);
         return false;
     }
     // Discard pending edits instead of saving them first: that's the point.

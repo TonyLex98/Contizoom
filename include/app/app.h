@@ -65,6 +65,7 @@ private:
     void openProjectDialog(int x, int y);
     void saveAsDialog();
     void switchProjectDialog(int x, int y);
+    void languageDialog(int x, int y);
 };
 
 }  // namespace ic

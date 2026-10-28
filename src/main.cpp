@@ -1,4 +1,6 @@
 #include "app/demo.h"
+#include "app/settings.h"
+#include "i18n/i18n.h"
 #include "model/canvas.h"
 #include "storage/json_storage.h"
 #include "util/file.h"
@@ -24,6 +26,9 @@ void printUsage() {
                "  infinite_canvas --snapshot <out.txt> [project.canvas] [--size WxH]\n"
                "                                       render a project (default: the demo) to a text file\n"
                "  infinite_canvas --version | --help\n"
+               "\n"
+               "Options:\n"
+               "  --lang en|ru|zh|fr|es                interface language (default: saved choice, then system)\n"
                "\n"
                "Project format " IC_STORAGE_FORMAT_STRING "\n",
                stdout);
@@ -54,10 +59,14 @@ int snapshot(const std::string& out, const std::string& project, int w, int h) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    std::string projectPath, newName, snapshotOut;
+    std::string projectPath, newName, snapshotOut, langArg;
     int snapW = 120, snapH = 40;
 
     for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--lang" && i + 1 < argc) {
+            langArg = argv[++i];
+            continue;
+        }
         const std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
             printUsage();
@@ -83,6 +92,20 @@ int main(int argc, char* argv[]) {
         } else {
             projectPath = arg;
         }
+    }
+
+    // Interface language: --lang, else the saved choice, else the system's.
+    if (!langArg.empty()) {
+        const auto lang = ic::i18n::parse(langArg);
+        if (!lang) {
+            error("unknown language " + langArg + " (use en, ru, zh, fr or es)");
+            return 2;
+        }
+        ic::i18n::setLanguage(*lang);
+    } else if (auto saved = ic::i18n::parse(ic::Settings::load().language)) {
+        ic::i18n::setLanguage(*saved);
+    } else {
+        ic::i18n::setLanguage(ic::i18n::detectSystemLanguage());
     }
 
     if (!snapshotOut.empty()) return snapshot(snapshotOut, projectPath, snapW, snapH);

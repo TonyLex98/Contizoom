@@ -62,6 +62,7 @@ private:
     void drawAreaSelection(const AreaSelection& sel, const Viewport& vp);
     void drawNodeEditor(const NodeEditor& editor);
     void drawConnectionEditor(const ConnectionEditor& editor);
+    void drawField(int x, int y, int cells, const std::string& text, int cursor, uint16_t attr);
     void drawHud(const Canvas& canvas, const UiState& ui, const HudInfo& hud);
     void drawSidebar(const Canvas& canvas, const UiState& ui);
     void drawSidebarTree(const Canvas& canvas, const UiState& ui, const std::string& parentUuid, int indent, int& row);

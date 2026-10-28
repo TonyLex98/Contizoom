@@ -1,0 +1,364 @@
+// User interface messages: IC_MSG(Key, English, Russian, Chinese, French, Spanish)
+//
+// Included by i18n.h (to declare Msg::Key) and i18n.cpp (to build the
+// table). Placeholders {0}, {1}, ... are filled by tr(msg, {args}).
+// Keep keys grouped by where they appear.
+
+// ---- Status bar and sidebar ------------------------------------------
+IC_MSG(HudNoProject,
+       "No project - right-click for the menu",
+       "Нет проекта — правый клик для меню",
+       "没有打开的项目 — 右键打开菜单",
+       "Aucun projet — clic droit pour le menu",
+       "Ningún proyecto: clic derecho para el menú")
+IC_MSG(HudZoom, "zoom", "масштаб", "缩放", "zoom", "zoom")
+IC_MSG(Boxes, "{0} boxes", "блоков: {0}", "{0} 个框", "{0} boîtes", "{0} cajas")
+IC_MSG(SidebarTitle, "OUTLINE", "СТРУКТУРА", "大纲", "PLAN", "ESQUEMA")
+IC_MSG(SidebarEmpty, "Empty canvas.", "Холст пуст.", "画布为空。", "Canevas vide.", "Lienzo vacío.")
+IC_MSG(SidebarEmptyHint,
+       "Press N to add a box.",
+       "Нажмите N, чтобы добавить блок.",
+       "按 N 添加一个框。",
+       "Appuyez sur N pour ajouter une boîte.",
+       "Pulsa N para añadir una caja.")
+IC_MSG(Untitled, "(untitled)", "(без названия)", "（无标题）", "(sans titre)", "(sin título)")
+IC_MSG(EditorTextTitle, "text", "текст", "文本", "texte", "texto")
+
+// ---- Help row ------------------------------------------------------------
+IC_MSG(HelpEditText,
+       "Enter: new line   Ctrl+Enter or click outside: save   Esc: cancel",
+       "Enter: новая строка   Ctrl+Enter или клик снаружи: сохранить   Esc: отмена",
+       "Enter：换行   Ctrl+Enter 或点击外部：保存   Esc：取消",
+       "Entrée : nouvelle ligne   Ctrl+Entrée ou clic à l'extérieur : enregistrer   Échap : annuler",
+       "Intro: nueva línea   Ctrl+Intro o clic fuera: guardar   Esc: cancelar")
+IC_MSG(HelpEditLine,
+       "Enter: save   Esc: cancel",
+       "Enter: сохранить   Esc: отмена",
+       "Enter：保存   Esc：取消",
+       "Entrée : enregistrer   Échap : annuler",
+       "Intro: guardar   Esc: cancelar")
+IC_MSG(HelpConnecting,
+       "Release over another box to connect (over a • to pin the end)   Esc: cancel",
+       "Отпустите над другим блоком, чтобы связать (над • — закрепить конец)   Esc: отмена",
+       "在另一个框上松开以连接（在 • 上松开可固定端点）   Esc：取消",
+       "Relâchez sur une autre boîte pour relier (sur un • pour fixer l'extrémité)   Échap : annuler",
+       "Suelta sobre otra caja para conectar (sobre un • para fijar el extremo)   Esc: cancelar")
+IC_MSG(HelpConnection,
+       "Connection ({0}):   T style   V reverse   F2/Enter rename   X delete   Right-click menu   Esc deselect",
+       "Связь ({0}):   T стиль   V развернуть   F2/Enter имя   X удалить   Правый клик: меню   Esc снять выделение",
+       "连接（{0}）：   T 样式   V 反向   F2/Enter 重命名   X 删除   右键菜单   Esc 取消选择",
+       "Lien ({0}) :   T style   V inverser   F2/Entrée renommer   X supprimer   Clic droit : menu   Échap désélectionner",
+       "Conexión ({0}):   T estilo   V invertir   F2/Intro renombrar   X eliminar   Clic derecho: menú   Esc deseleccionar")
+IC_MSG(HelpDefault,
+       "N / dbl-click empty: new box   Dbl-click edit   F2 rename   Drag move   Corner resize   Drag • connect   "
+       "Tab/Shift+Tab un/nest   F frame   X delete   Ctrl+Z undo   Wheel zoom   WASD pan   0 fit   "
+       "Shift+drag select   Right-click menu   Ctrl+Q quit",
+       "N / двойной клик по пустому: новый блок   Двойной клик: правка   F2 имя   Тянуть: двигать   Угол: размер   "
+       "Тянуть •: связь   Tab/Shift+Tab вынуть/вложить   F рамка   X удалить   Ctrl+Z отмена   Колесо: масштаб   "
+       "WASD сдвиг   0 всё   Shift+тянуть: выделить   Правый клик: меню   Ctrl+Q выход",
+       "N / 双击空白：新建框   双击：编辑   F2 重命名   拖动：移动   拖角：缩放   拖 •：连接   "
+       "Tab/Shift+Tab 移出/嵌入   F 加框   X 删除   Ctrl+Z 撤销   滚轮：缩放   WASD 平移   0 全部显示   "
+       "Shift+拖动：框选   右键：菜单   Ctrl+Q 退出",
+       "N / double-clic sur le vide : nouvelle boîte   Double-clic : modifier   F2 renommer   Glisser : déplacer   "
+       "Coin : redimensionner   Glisser • : relier   Tab/Maj+Tab sortir/imbriquer   F cadre   X supprimer   "
+       "Ctrl+Z annuler   Molette : zoom   WASD défiler   0 tout voir   Maj+glisser : sélection   Clic droit : menu   "
+       "Ctrl+Q quitter",
+       "N / doble clic en vacío: nueva caja   Doble clic: editar   F2 renombrar   Arrastrar: mover   "
+       "Esquina: redimensionar   Arrastrar •: conectar   Tab/Mayús+Tab sacar/anidar   F marco   X eliminar   "
+       "Ctrl+Z deshacer   Rueda: zoom   WASD desplazar   0 ver todo   Mayús+arrastrar: seleccionar   "
+       "Clic derecho: menú   Ctrl+Q salir")
+
+// ---- Connection styles -----------------------------------------------
+IC_MSG(StyleArrow, "arrow", "стрелка", "箭头", "flèche", "flecha")
+IC_MSG(StyleDashedArrow, "dashed arrow", "пунктирная стрелка", "虚线箭头", "flèche en tirets", "flecha discontinua")
+IC_MSG(StyleDottedArrow, "dotted arrow", "точечная стрелка", "点线箭头", "flèche pointillée", "flecha punteada")
+IC_MSG(StyleLine, "line", "линия", "直线", "ligne", "línea")
+IC_MSG(StyleDashedLine, "dashed line", "пунктирная линия", "虚线", "ligne en tirets", "línea discontinua")
+IC_MSG(StyleDottedLine, "dotted line", "точечная линия", "点线", "ligne pointillée", "línea punteada")
+
+// ---- Menu titles -------------------------------------------------------
+IC_MSG(TitleCanvas, "Canvas", "Холст", "画布", "Canevas", "Lienzo")
+IC_MSG(TitleProject, "Project", "Проект", "项目", "Projet", "Proyecto")
+IC_MSG(TitleBox, "Box", "Блок", "框", "Boîte", "Caja")
+IC_MSG(TitleConnection, "Connection", "Связь", "连接", "Lien", "Conexión")
+IC_MSG(TitleStyle, "Style", "Стиль", "样式", "Style", "Estilo")
+IC_MSG(TitleOpen,
+       "Open (recent first)",
+       "Открыть (сначала новые)",
+       "打开（最近的在前）",
+       "Ouvrir (récents d'abord)",
+       "Abrir (recientes primero)")
+IC_MSG(TitleSwitch, "Switch to", "Перейти к", "切换到", "Basculer vers", "Cambiar a")
+IC_MSG(TitleSaveCopy,
+       "Save a copy as - name",
+       "Сохранить копию как — имя",
+       "另存副本 — 名称",
+       "Enregistrer une copie sous — nom",
+       "Guardar una copia como: nombre")
+IC_MSG(TitleLanguage, "Language", "Язык", "语言", "Langue", "Idioma")
+
+// ---- Menu items --------------------------------------------------------
+IC_MSG(MenuNewBoxHere, "New box here", "Новый блок здесь", "在此新建框", "Nouvelle boîte ici", "Nueva caja aquí")
+IC_MSG(MenuNewProject, "New project", "Новый проект", "新建项目", "Nouveau projet", "Nuevo proyecto")
+IC_MSG(MenuOpen, "Open project...", "Открыть проект…", "打开项目…", "Ouvrir un projet…", "Abrir proyecto…")
+IC_MSG(MenuSwitch, "Switch project...", "Сменить проект…", "切换项目…", "Changer de projet…", "Cambiar de proyecto…")
+IC_MSG(MenuSave, "Save now", "Сохранить сейчас", "立即保存", "Enregistrer maintenant", "Guardar ahora")
+IC_MSG(MenuSaveCopy,
+       "Save a copy as...",
+       "Сохранить копию как…",
+       "另存副本…",
+       "Enregistrer une copie sous…",
+       "Guardar una copia como…")
+IC_MSG(MenuRevert,
+       "Revert to last save",
+       "Вернуть последнее сохранение",
+       "恢复到上次保存",
+       "Revenir au dernier enregistrement",
+       "Volver al último guardado")
+IC_MSG(MenuExport, "Export as Markdown", "Экспорт в Markdown", "导出为 Markdown", "Exporter en Markdown", "Exportar a Markdown")
+IC_MSG(MenuClose, "Close project", "Закрыть проект", "关闭项目", "Fermer le projet", "Cerrar proyecto")
+IC_MSG(MenuUndo, "Undo", "Отменить", "撤销", "Annuler", "Deshacer")
+IC_MSG(MenuRedo, "Redo", "Повторить", "重做", "Rétablir", "Rehacer")
+IC_MSG(MenuFit, "Fit view", "Показать всё", "适应视图", "Tout afficher", "Ajustar vista")
+IC_MSG(MenuLanguage, "Language...", "Язык…", "语言…", "Langue…", "Idioma…")
+IC_MSG(MenuQuit, "Quit", "Выход", "退出", "Quitter", "Salir")
+IC_MSG(MenuRename, "Rename", "Переименовать", "重命名", "Renommer", "Renombrar")
+IC_MSG(MenuEditText, "Edit text", "Изменить текст", "编辑文本", "Modifier le texte", "Editar texto")
+IC_MSG(MenuNewChildHere,
+       "New box inside, here",
+       "Новый блок внутри, здесь",
+       "在此框内新建",
+       "Nouvelle boîte dedans, ici",
+       "Nueva caja dentro, aquí")
+IC_MSG(MenuZoomTo, "Zoom to", "Приблизить", "缩放到此", "Zoomer dessus", "Acercar")
+IC_MSG(MenuFrame, "Wrap in frame", "Обернуть рамкой", "用框架包裹", "Encadrer", "Envolver en marco")
+IC_MSG(MenuPromote, "Lift out of parent", "Вынуть из родителя", "移出父框", "Sortir du parent", "Sacar del padre")
+IC_MSG(MenuDemote,
+       "Nest into box above",
+       "Вложить в блок выше",
+       "嵌入上方的框",
+       "Imbriquer dans la boîte au-dessus",
+       "Anidar en la caja de arriba")
+IC_MSG(MenuDeleteBox,
+       "Delete with contents",
+       "Удалить с содержимым",
+       "连同内容删除",
+       "Supprimer avec le contenu",
+       "Eliminar con contenido")
+IC_MSG(MenuProjectSub, "Project...", "Проект…", "项目…", "Projet…", "Proyecto…")
+IC_MSG(MenuStyle, "Style...", "Стиль…", "样式…", "Style…", "Estilo…")
+IC_MSG(MenuReverse, "Reverse direction", "Развернуть направление", "反转方向", "Inverser le sens", "Invertir dirección")
+IC_MSG(MenuDelete, "Delete", "Удалить", "删除", "Supprimer", "Eliminar")
+IC_MSG(HintDblClick, "Dbl-click", "Дв. клик", "双击", "Double-clic", "Doble clic")
+IC_MSG(HintCurrent, "current", "текущий", "当前", "actuel", "actual")
+IC_MSG(PromptHelp,
+       "Enter: OK   Esc: cancel",
+       "Enter: ОК   Esc: отмена",
+       "Enter：确定   Esc：取消",
+       "Entrée : OK   Échap : annuler",
+       "Intro: aceptar   Esc: cancelar")
+
+// ---- Status messages -------------------------------------------------
+IC_MSG(StatusSaved, "Saved to {0}", "Сохранено: {0}", "已保存到 {0}", "Enregistré dans {0}", "Guardado en {0}")
+IC_MSG(StatusSaveFailed,
+       "Save failed: {0}",
+       "Не удалось сохранить: {0}",
+       "保存失败：{0}",
+       "Échec de l'enregistrement : {0}",
+       "Error al guardar: {0}")
+IC_MSG(StatusNewProject,
+       "New project - it saves itself as you work",
+       "Новый проект — сохраняется сам по ходу работы",
+       "新项目 — 编辑时会自动保存",
+       "Nouveau projet — il s'enregistre tout seul",
+       "Nuevo proyecto: se guarda solo mientras trabajas")
+IC_MSG(StatusOpened, "Opened {0}", "Открыт: {0}", "已打开 {0}", "Ouvert : {0}", "Abierto: {0}")
+IC_MSG(StatusOpenFailed,
+       "Open failed: {0}",
+       "Не удалось открыть: {0}",
+       "打开失败：{0}",
+       "Échec de l'ouverture : {0}",
+       "Error al abrir: {0}")
+IC_MSG(StatusNoSaved,
+       "No saved projects in {0}",
+       "Нет сохранённых проектов в {0}",
+       "{0} 中没有已保存的项目",
+       "Aucun projet enregistré dans {0}",
+       "No hay proyectos guardados en {0}")
+IC_MSG(StatusReverted,
+       "Reverted to the last saved state",
+       "Возвращено последнее сохранённое состояние",
+       "已恢复到上次保存的状态",
+       "Retour au dernier état enregistré",
+       "Se volvió al último estado guardado")
+IC_MSG(StatusRevertFailed,
+       "Revert failed: {0}",
+       "Не удалось вернуть: {0}",
+       "恢复失败：{0}",
+       "Échec du retour : {0}",
+       "Error al volver: {0}")
+IC_MSG(StatusExported, "Exported to {0}", "Экспортировано: {0}", "已导出到 {0}", "Exporté vers {0}", "Exportado a {0}")
+IC_MSG(StatusExportFailed,
+       "Export failed: {0}",
+       "Не удалось экспортировать: {0}",
+       "导出失败：{0}",
+       "Échec de l'export : {0}",
+       "Error al exportar: {0}")
+IC_MSG(StatusNowIn,
+       "Now working in {0}",
+       "Теперь работаем в {0}",
+       "现在编辑的是 {0}",
+       "Vous travaillez maintenant dans {0}",
+       "Ahora trabajas en {0}")
+IC_MSG(StatusDemoFailed,
+       "Could not save the demo: {0}",
+       "Не удалось сохранить демо: {0}",
+       "无法保存演示：{0}",
+       "Impossible d'enregistrer la démo : {0}",
+       "No se pudo guardar la demo: {0}")
+IC_MSG(StatusAutoSaveFailed,
+       "Auto-save failed: {0}",
+       "Автосохранение не удалось: {0}",
+       "自动保存失败：{0}",
+       "Échec de l'enregistrement automatique : {0}",
+       "Error de autoguardado: {0}")
+IC_MSG(StatusLocked,
+       "\"{0}\" seems to be open in another window too (process {1}); changes made in both will overwrite each other",
+       "«{0}», похоже, открыт ещё в одном окне (процесс {1}); правки из обоих окон будут затирать друг друга",
+       "“{0}”似乎也在另一个窗口中打开（进程 {1}）；两边的修改会互相覆盖",
+       "« {0} » semble aussi ouvert dans une autre fenêtre (processus {1}) ; les modifications s'écraseront",
+       "«{0}» parece estar abierto también en otra ventana (proceso {1}); los cambios se sobrescribirán")
+IC_MSG(StatusLanguage, "Language: {0}", "Язык: {0}", "语言：{0}", "Langue : {0}", "Idioma: {0}")
+IC_MSG(ErrNothingSaved,
+       "nothing saved yet",
+       "ещё ничего не сохранено",
+       "尚未保存任何内容",
+       "rien n'est encore enregistré",
+       "todavía no se ha guardado nada")
+IC_MSG(ErrNotAProject, "Not a project: {0}", "Это не проект: {0}", "不是项目：{0}", "Ce n'est pas un projet : {0}", "No es un proyecto: {0}")
+
+// ---- Default names ---------------------------------------------------
+IC_MSG(DefaultBox, "New box", "Новый блок", "新框", "Nouvelle boîte", "Nueva caja")
+IC_MSG(DefaultFrame, "Frame", "Рамка", "框架", "Cadre", "Marco")
+IC_MSG(DefaultProject, "Untitled", "Без названия", "未命名", "Sans titre", "Sin título")
+IC_MSG(CopyName, "{0} copy", "{0} — копия", "{0} 副本", "{0} (copie)", "{0} (copia)")
+IC_MSG(Connections, "Connections", "Связи", "连接", "Liens", "Conexiones")
+
+// ---- Welcome project -------------------------------------------------
+IC_MSG(DemoName, "Welcome", "Добро пожаловать", "欢迎", "Bienvenue", "Bienvenida")
+IC_MSG(DemoTitle,
+       "Welcome to Infinite Canvas",
+       "Добро пожаловать в Infinite Canvas",
+       "欢迎使用 Infinite Canvas",
+       "Bienvenue dans Infinite Canvas",
+       "Bienvenido a Infinite Canvas")
+IC_MSG(DemoIntro,
+       "A zoomable outline: boxes inside boxes, as deep as you like.\n"
+       "Scroll to zoom into any box; its contents unfold as you get closer.",
+       "Масштабируемая структура: блоки внутри блоков на любую глубину.\n"
+       "Крутите колесо, чтобы приблизиться: содержимое раскрывается по мере приближения.",
+       "可缩放的大纲：框中套框，层级不限。\n"
+       "滚动鼠标滚轮放大任意框，靠近时内容会逐步展开。",
+       "Un plan zoomable : des boîtes dans des boîtes, aussi profond que vous voulez.\n"
+       "Faites défiler pour zoomer : le contenu se déplie à mesure que vous approchez.",
+       "Un esquema con zoom: cajas dentro de cajas, tan hondo como quieras.\n"
+       "Usa la rueda para acercarte: el contenido se despliega al aproximarte.")
+IC_MSG(DemoBasics, "Basics", "Основы", "基础", "Les bases", "Lo básico")
+IC_MSG(DemoBasicsText,
+       "N          new box (inside the selected one)\n"
+       "Dbl-click  edit text; on the header: rename (F2)\n"
+       "Drag       move   Corner   resize\n"
+       "X / Del    delete with everything inside",
+       "N          новый блок (внутри выделенного)\n"
+       "Дв. клик   правка текста; по заголовку — имя (F2)\n"
+       "Тянуть     двигать   Угол   размер\n"
+       "X / Del    удалить вместе с содержимым",
+       "N          新建框（在所选框内）\n"
+       "双击       编辑文本；在标题上：重命名（F2）\n"
+       "拖动       移动   拖角   调整大小\n"
+       "X / Del    连同内容删除",
+       "N            nouvelle boîte (dans la sélection)\n"
+       "Double-clic  modifier le texte ; sur l'en-tête : renommer (F2)\n"
+       "Glisser      déplacer   Coin   redimensionner\n"
+       "X / Suppr    supprimer avec tout le contenu",
+       "N           nueva caja (dentro de la seleccionada)\n"
+       "Doble clic  editar texto; en el título: renombrar (F2)\n"
+       "Arrastrar   mover   Esquina   redimensionar\n"
+       "X / Supr    eliminar con todo su contenido")
+IC_MSG(DemoTryIt, "Try it", "Попробуйте", "试一试", "Essayez", "Pruébalo")
+IC_MSG(DemoTryItText,
+       "Select me and press N",
+       "Выделите меня и нажмите N",
+       "选中我并按 N",
+       "Sélectionnez-moi et appuyez sur N",
+       "Seleccióname y pulsa N")
+IC_MSG(DemoStructure, "Structure", "Структура", "结构", "Structure", "Estructura")
+IC_MSG(DemoStructureText,
+       "Tab        lift a box out of its parent\n"
+       "Shift+Tab  nest it into the box above\n"
+       "F          wrap the selection in a frame",
+       "Tab        вынуть блок из родителя\n"
+       "Shift+Tab  вложить в блок выше\n"
+       "F          обернуть выделенное рамкой",
+       "Tab        把框移出父框\n"
+       "Shift+Tab  嵌入上方的框\n"
+       "F          用框架包裹所选内容",
+       "Tab        sortir une boîte de son parent\n"
+       "Maj+Tab    l'imbriquer dans la boîte au-dessus\n"
+       "F          encadrer la sélection",
+       "Tab        sacar una caja de su padre\n"
+       "Mayús+Tab  anidarla en la caja de arriba\n"
+       "F          envolver la selección en un marco")
+IC_MSG(DemoIdea, "Idea", "Идея", "想法", "Idée", "Idea")
+IC_MSG(DemoPlan, "Plan", "План", "计划", "Plan", "Plan")
+IC_MSG(DemoDone, "Done", "Готово", "完成", "Fait", "Hecho")
+IC_MSG(DemoRefine, "refine", "уточнить", "细化", "affiner", "pulir")
+IC_MSG(DemoShip, "ship", "выпустить", "发布", "livrer", "lanzar")
+IC_MSG(DemoNavigation, "Navigation", "Навигация", "导航", "Navigation", "Navegación")
+IC_MSG(DemoNavigationText,
+       "Wheel / + -  zoom      WASD / arrows  pan\n"
+       "0            fit everything on screen\n"
+       "Enter        zoom to the selected box\n"
+       "Sidebar      click a box in the outline to jump there",
+       "Колесо / + -  масштаб    WASD / стрелки  сдвиг\n"
+       "0             показать всё\n"
+       "Enter         приблизить выделенный блок\n"
+       "Панель слева  клик по блоку — перейти к нему",
+       "滚轮 / + -   缩放      WASD / 方向键  平移\n"
+       "0            显示全部\n"
+       "Enter        缩放到所选框\n"
+       "侧边栏       点击大纲中的框即可跳转",
+       "Molette / + -   zoom      WASD / flèches  défiler\n"
+       "0               tout afficher\n"
+       "Entrée          zoomer sur la boîte sélectionnée\n"
+       "Barre latérale  cliquez sur une boîte du plan pour y aller",
+       "Rueda / + -  zoom      WASD / flechas  desplazar\n"
+       "0            ver todo\n"
+       "Intro        acercar la caja seleccionada\n"
+       "Panel        clic en una caja del esquema para ir a ella")
+IC_MSG(DemoConnectionsText,
+       "Hover a box, drag from one of its • to another box.\n"
+       "Click a line: T style, V reverse, F2 name, X delete.",
+       "Наведите на блок и тяните от его • к другому блоку.\n"
+       "Клик по линии: T стиль, V развернуть, F2 имя, X удалить.",
+       "将鼠标悬停在框上，从它的 • 拖到另一个框。\n"
+       "点击连线：T 样式，V 反向，F2 命名，X 删除。",
+       "Survolez une boîte et glissez d'un de ses • vers une autre.\n"
+       "Clic sur une ligne : T style, V inverser, F2 nom, X supprimer.",
+       "Pasa sobre una caja y arrastra desde uno de sus • a otra.\n"
+       "Clic en una línea: T estilo, V invertir, F2 nombre, X eliminar.")
+IC_MSG(DemoFrom, "From", "Откуда", "起点", "De", "Desde")
+IC_MSG(DemoTo, "To", "Куда", "终点", "Vers", "Hasta")
+IC_MSG(DemoDragMe, "drag me", "потяни меня", "拖动我", "tirez-moi", "arrástrame")
+IC_MSG(DemoProjects, "Projects", "Проекты", "项目", "Projets", "Proyectos")
+IC_MSG(DemoProjectsText,
+       "Every edit is saved automatically; Ctrl+Z / Ctrl+Y undo and redo.\n"
+       "Right-click a box, a line or empty space for its menu (open, copy, export...).",
+       "Каждая правка сохраняется сама; Ctrl+Z / Ctrl+Y — отмена и повтор.\n"
+       "Правый клик по блоку, линии или пустому месту открывает меню (открыть, копия, экспорт…).",
+       "每次编辑都会自动保存；Ctrl+Z / Ctrl+Y 撤销和重做。\n"
+       "右键点击框、连线或空白处打开菜单（打开、副本、导出…）。",
+       "Chaque modification est enregistrée automatiquement ; Ctrl+Z / Ctrl+Y annulent et rétablissent.\n"
+       "Clic droit sur une boîte, une ligne ou le vide pour son menu (ouvrir, copier, exporter…).",
+       "Cada cambio se guarda solo; Ctrl+Z / Ctrl+Y deshacen y rehacen.\n"
+       "Clic derecho en una caja, una línea o el vacío para su menú (abrir, copiar, exportar…).")

@@ -1,4 +1,5 @@
 #include "app/demo.h"
+#include "i18n/i18n.h"
 #include "input/handler.h"
 #include "model/canvas.h"
 #include "view/console_renderer.h"
@@ -7,62 +8,41 @@ namespace ic {
 
 namespace {
 
-std::string box(Canvas& c, const std::string& parent, const std::string& name, const std::string& text, Rect r) {
-    return c.createNode(text, r, name, parent);
+std::string box(Canvas& c, const std::string& parent, Msg name, Msg text, Rect r) {
+    return c.createNode(text == Msg::Count ? "" : tr(text), r, tr(name), parent);
 }
 
 }  // namespace
 
+// The welcome project, in the current UI language.
 void buildDemoCanvas(Canvas& c) {
     c.clear();
-    c.canvasName = "Welcome";
+    c.canvasName = tr(Msg::DemoName);
+    const Msg none = Msg::Count;
 
-    const std::string welcome = box(c, "", "Welcome to Infinite Canvas",
-                                    "A zoomable outline: boxes inside boxes, as deep as you like.\n"
-                                    "Scroll to zoom into any box; its contents unfold as you get closer.",
-                                    {0, 0, 150, 70});
+    const std::string welcome = box(c, "", Msg::DemoTitle, Msg::DemoIntro, {0, 0, 150, 70});
 
-    const std::string basics = box(c, welcome, "Basics",
-                                   "N          new box (inside the selected one)\n"
-                                   "Dbl-click  edit text; on the header: rename (F2)\n"
-                                   "Drag       move   Corner   resize\n"
-                                   "X / Del    delete with everything inside",
-                                   {4, 6, 64, 18});
-    box(c, basics, "Try it", "Select me and press N", {4, 9, 28, 6});
+    const std::string basics = box(c, welcome, Msg::DemoBasics, Msg::DemoBasicsText, {4, 6, 64, 18});
+    box(c, basics, Msg::DemoTryIt, Msg::DemoTryItText, {4, 9, 28, 6});
 
-    const std::string structure = box(c, welcome, "Structure",
-                                      "Tab        lift a box out of its parent\n"
-                                      "Shift+Tab  nest it into the box above\n"
-                                      "F          wrap the selection in a frame",
-                                      {78, 6, 66, 18});
-    const std::string a = box(c, structure, "Idea", "", {3, 9, 12, 5});
-    const std::string b = box(c, structure, "Plan", "", {27, 9, 12, 5});
-    const std::string d = box(c, structure, "Done", "", {51, 9, 12, 5});
-    c.createConnection(a, b, "refine");
-    c.createConnection(b, d, "ship");
+    const std::string structure = box(c, welcome, Msg::DemoStructure, Msg::DemoStructureText, {78, 6, 66, 18});
+    const std::string a = box(c, structure, Msg::DemoIdea, none, {3, 9, 12, 5});
+    const std::string b = box(c, structure, Msg::DemoPlan, none, {27, 9, 12, 5});
+    const std::string d = box(c, structure, Msg::DemoDone, none, {51, 9, 12, 5});
+    c.createConnection(a, b, tr(Msg::DemoRefine));
+    c.createConnection(b, d, tr(Msg::DemoShip));
 
-    const std::string nav = box(c, welcome, "Navigation",
-                                "Wheel / + -  zoom      WASD / arrows  pan\n"
-                                "0            fit everything on screen\n"
-                                "Enter        zoom to the selected box\n"
-                                "Sidebar      click a box in the outline to jump there",
-                                {4, 30, 64, 18});
+    const std::string nav = box(c, welcome, Msg::DemoNavigation, Msg::DemoNavigationText, {4, 30, 64, 18});
 
-    const std::string links = box(c, welcome, "Connections",
-                                  "Hover a box, drag from one of its • to another box.\n"
-                                  "Click a line: T style, V reverse, F2 name, X delete.",
-                                  {78, 30, 66, 18});
-    const std::string from = box(c, links, "From", "", {6, 9, 18, 6});
-    const std::string to = box(c, links, "To", "", {40, 9, 18, 6});
-    if (auto conn = c.getConnection(c.createConnection(from, to, "drag me"))) {
+    const std::string links = box(c, welcome, Msg::Connections, Msg::DemoConnectionsText, {78, 30, 66, 18});
+    const std::string from = box(c, links, Msg::DemoFrom, none, {6, 9, 18, 6});
+    const std::string to = box(c, links, Msg::DemoTo, none, {40, 9, 18, 6});
+    if (auto conn = c.getConnection(c.createConnection(from, to, tr(Msg::DemoDragMe)))) {
         conn->fromAnchor = {AnchorEdge::Right, 1};
         conn->toAnchor = {AnchorEdge::Left, 1};
     }
 
-    box(c, welcome, "Projects",
-        "Every edit is saved automatically; Ctrl+Z / Ctrl+Y undo and redo.\n"
-        "Right-click a box, a line or empty space for its menu (open, copy, export...).",
-        {4, 52, 140, 10});
+    box(c, welcome, Msg::DemoProjects, Msg::DemoProjectsText, {4, 52, 140, 10});
     c.createConnection(nav, links, "", ConnType::DashedLine);
 
     c.autoLayout();

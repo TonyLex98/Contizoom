@@ -31,7 +31,7 @@ void Node::autoResize(int charsPerLine) {
             endLine();
             ++lines;
         } else if (cp != U'\r') {
-            ++currentLen;
+            currentLen += utf8::cellWidth(cp);
         }
     });
     endLine();

@@ -24,6 +24,10 @@ void ConsoleOutput::presentRegion(const CellBuffer& buffer, int x, int y) {
     for (size_t i = 0; i < cells.size(); ++i) {
         cells[i].Char.UnicodeChar = src[i].ch;
         cells[i].Attributes = src[i].attr;
+        // Wide (CJK) characters span two cells; the console wants both
+        // halves flagged so it draws one double-width glyph.
+        if (src[i].part == CellBuffer::Part::Lead) cells[i].Attributes |= COMMON_LVB_LEADING_BYTE;
+        if (src[i].part == CellBuffer::Part::Trail) cells[i].Attributes |= COMMON_LVB_TRAILING_BYTE;
     }
     const COORD size = {static_cast<SHORT>(w), static_cast<SHORT>(h)};
     const COORD origin = {0, 0};

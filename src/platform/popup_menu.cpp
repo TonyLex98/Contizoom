@@ -1,6 +1,7 @@
 #include "platform/popup_menu.h"
 #include "platform/console_input.h"
 #include "platform/console_output.h"
+#include "i18n/i18n.h"
 #include "util/utf8.h"
 #include "view/cell_buffer.h"
 
@@ -44,10 +45,10 @@ int PopupMenu::choose(const std::string& title, const std::vector<MenuItem>& ite
                       int screenH) {
     if (items.empty()) return -1;
 
-    int labelW = utf8::length(title) + 4, hintW = 0;
+    int labelW = utf8::width(title) + 4, hintW = 0;
     for (const auto& m : items) {
-        labelW = std::max(labelW, utf8::length(m.label));
-        hintW = std::max(hintW, utf8::length(m.hint));
+        labelW = std::max(labelW, utf8::width(m.label));
+        hintW = std::max(hintW, utf8::width(m.hint));
     }
     const int w = std::min(screenW, labelW + (hintW ? hintW + 3 : 0) + 4);
     const int h = std::min(screenH, static_cast<int>(items.size()) + 2);
@@ -80,7 +81,7 @@ int PopupMenu::choose(const std::string& title, const std::vector<MenuItem>& ite
             buf.fill(1, row, w - 2, 1, L' ', attr);
             buf.text(2, row, m.label, attr, w - 4);
             if (!m.hint.empty()) {
-                const int hw = utf8::length(m.hint);
+                const int hw = utf8::width(m.hint);
                 buf.text(w - 2 - hw, row, m.hint, hi ? kHighlight : kHint, hw);
             }
         }
@@ -133,12 +134,12 @@ int PopupMenu::choose(const std::string& title, const std::vector<MenuItem>& ite
 
 std::optional<std::string> PopupMenu::prompt(const std::string& title, const std::string& initial, int screenW,
                                              int screenH) {
-    const int w = std::min(screenW, std::max(40, utf8::length(title) + 8));
+    const int w = std::min(screenW, std::max(40, utf8::width(title) + 8));
     const int h = 5;
     const int x = std::max(0, (screenW - w) / 2), y = std::max(0, (screenH - h) / 2);
 
     std::string text = initial;
-    int cursor = utf8::length(text);
+    int cursor = utf8::length(text);  // in code points
     CellBuffer buf;
     buf.resize(w, h);
 
@@ -147,11 +148,13 @@ std::optional<std::string> PopupMenu::prompt(const std::string& title, const std
         const int fieldW = w - 4;
         const uint16_t field = color::make(color::White, color::Black);
         buf.fill(2, 1, fieldW, 1, L' ', field);
-        // Scroll so the cursor stays visible in long names.
-        const int first = std::max(0, cursor - fieldW + 1);
+        // Scroll so the cursor stays visible in long names (widths in cells).
+        const int cursorCells = utf8::widthOfPrefix(text, cursor);
+        int first = 0;
+        while (first < cursor && cursorCells - utf8::widthOfPrefix(text, first) >= fieldW) ++first;
         buf.text(2, 1, text.substr(utf8::byteOffset(text, first)), field, fieldW);
-        buf.setAttr(2 + cursor - first, 1, color::Inverse);
-        buf.text(2, 3, "Enter: OK   Esc: cancel", kHint, fieldW);
+        buf.setAttr(2 + cursorCells - utf8::widthOfPrefix(text, first), 1, color::Inverse);
+        buf.text(2, 3, tr(Msg::PromptHelp), kHint, fieldW);
         output_.presentRegion(buf, x, y);
     };
 

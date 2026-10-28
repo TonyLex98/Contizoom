@@ -51,6 +51,12 @@ A full review and rework of the codebase.
   only the changed boxes. A camera move used to rewrite every box file.
 
 ### Added
+- Interface in English, Russian, Chinese, French and Spanish: one compile-checked message
+  catalog, runtime switching from the menu, `--lang`, a saved choice, and system language
+  detection. The welcome project is created in the chosen language. Double-width (CJK)
+  characters are supported throughout layout, editing and console output.
+- Parents grow to the left and upwards when a child is dragged past their border.
+- A new box at a spot: double-click empty canvas, or "New box here" in the right-click menu.
 - A JSON parser and serializer (`util/json`), and UTF-8 utilities.
 - Project format 1.1 with an explicit version. Format 1.0 files still open.
 - `--snapshot` headless rendering, plus `--version` and `--help`.
@@ -61,7 +67,7 @@ A full review and rework of the codebase.
 - Context menus for boxes, connections and the project.
 - A project lock that warns when the same project is open in two windows, "Save a copy as",
   Markdown export, and an Open list showing the date and number of boxes.
-- Unit tests (69 cases), a CMake test target, and CI on MSVC, GCC and Clang with sanitizers.
+- Unit tests (80 cases), a CMake test target, and CI on MSVC, GCC and Clang with sanitizers.
 
 ## 0.1.0
 

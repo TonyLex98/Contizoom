@@ -114,6 +114,55 @@ inline wchar_t toCell(char32_t cp) {
     return cp < 0x10000 ? static_cast<wchar_t>(cp) : L'�';
 }
 
+// How many console cells a code point occupies: 2 for East Asian wide and
+// fullwidth characters (CJK ideographs, kana, hangul, fullwidth forms),
+// 0 for combining marks, 1 otherwise. A compact subset of Unicode's
+// East_Asian_Width=W/F ranges, enough for real-world CJK text.
+inline int cellWidth(char32_t cp) {
+    if (cp == 0) return 0;
+    if ((cp >= 0x0300 && cp <= 0x036F) || (cp >= 0x200B && cp <= 0x200F)) return 0;
+    if ((cp >= 0x1100 && cp <= 0x115F) ||   // Hangul Jamo
+        (cp >= 0x2E80 && cp <= 0x303E) ||   // CJK radicals, punctuation
+        (cp >= 0x3041 && cp <= 0x33FF) ||   // kana, CJK symbols
+        (cp >= 0x3400 && cp <= 0x4DBF) ||   // CJK extension A
+        (cp >= 0x4E00 && cp <= 0x9FFF) ||   // CJK unified ideographs
+        (cp >= 0xA000 && cp <= 0xA4CF) ||   // Yi
+        (cp >= 0xAC00 && cp <= 0xD7A3) ||   // Hangul syllables
+        (cp >= 0xF900 && cp <= 0xFAFF) ||   // CJK compatibility ideographs
+        (cp >= 0xFE30 && cp <= 0xFE4F) ||   // CJK compatibility forms
+        (cp >= 0xFF00 && cp <= 0xFF60) ||   // fullwidth forms
+        (cp >= 0xFFE0 && cp <= 0xFFE6) ||   // fullwidth signs
+        (cp >= 0x20000 && cp <= 0x3FFFD))   // CJK extensions B+
+        return 2;
+    return 1;
+}
+
+// Display width of a string in console cells.
+inline int width(const std::string& s) {
+    int w = 0;
+    forEach(s, [&](char32_t cp) { w += cellWidth(cp); });
+    return w;
+}
+
+// Display width of the first `count` code points.
+inline int widthOfPrefix(const std::string& s, int count) {
+    return width(prefix(s, count));
+}
+
+// The longest prefix that fits in `cells` console cells.
+inline std::string fitWidth(const std::string& s, int cells) {
+    int w = 0;
+    size_t pos = 0;
+    while (pos < s.size()) {
+        size_t next = pos;
+        const int cw = cellWidth(decode(s, next));
+        if (w + cw > cells) break;
+        w += cw;
+        pos = next;
+    }
+    return s.substr(0, pos);
+}
+
 }  // namespace ic::utf8
 
 #endif  // IC_UTF8_H
