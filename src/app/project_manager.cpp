@@ -1,334 +1,258 @@
-#ifndef _CRT_SECURE_NO_WARNINGS
-#define _CRT_SECURE_NO_WARNINGS
-#endif
-
 #include "app/project_manager.h"
 #include "model/canvas.h"
-#include "storage/json_storage.h"
-#include <filesystem>
+#include "storage/storage.h"
+#include "util/clock.h"
+#include "util/path.h"
+#include "util/uuid.h"
+
 #include <algorithm>
-#include <iostream>
-#include <chrono>
 #include <cctype>
+#include <cstdlib>
+#include <filesystem>
 
 namespace ic {
 namespace fs = std::filesystem;
 
-static std::string sanitizeProjectName(const std::string& name) {
-    std::string result;
-    result.reserve(name.size());
-    for (unsigned char ch : name) {
-        if (std::isalnum(ch) || ch == '-' || ch == '_') {
-            result += static_cast<char>(ch);
-        } else if (ch == ' ' || ch == '.') {
-            result += '_';
-        }
+namespace {
+
+// Keeps letters (including non-ASCII), digits, '-' and '_'; spaces and dots
+// become '_'; characters that are illegal in file names are dropped.
+std::string sanitizeName(const std::string& name) {
+    std::string out;
+    for (const unsigned char ch : name) {
+        if (ch >= 0x80 || std::isalnum(ch) || ch == '-' || ch == '_') out += static_cast<char>(ch);
+        else if (ch == ' ' || ch == '.') out += '_';
     }
-    return result.empty() ? "Untitled" : result;
+    return out.empty() ? "Untitled" : out;
 }
 
-static std::string defaultProjectPath(const ProjectInfo& info) {
-    fs::path dir = ProjectManager::defaultProjectsDir();
-    std::string base = sanitizeProjectName(info.name);
-    fs::path candidate = dir / (base + ".canvas");
-    int suffix = 2;
-    while (fs::exists(candidate)) {
-        candidate = dir / (base + "_" + std::to_string(suffix++) + ".canvas");
-    }
-    return candidate.string();
+}  // namespace
+
+std::string ProjectInfo::displayPath() const {
+    if (path.empty()) return "[not saved]";
+    const fs::path p = path::fromUtf8(path);
+    return path::toUtf8(p.parent_path().filename() / p.filename());
 }
 
-ProjectManager::ProjectManager() {
-}
+ProjectManager::ProjectManager(std::unique_ptr<IStorage> storage) : storage_(std::move(storage)) {}
 
 ProjectManager::~ProjectManager() {
-    // Flush pending auto-save on all canvases
-    for (auto& [uuid, canvas] : canvases_) {
-        canvas->flushChanges();
-    }
-}
-
-void ProjectManager::setStorage(std::unique_ptr<IStorage> storage) {
-    storage_ = std::move(storage);
+    flushAll();
 }
 
 std::string ProjectManager::defaultProjectsDir() {
+    fs::path home;
 #ifdef _WIN32
-    const char* home = getenv("USERPROFILE");
+    if (const wchar_t* h = _wgetenv(L"USERPROFILE")) home = h;
 #else
-    const char* home = getenv("HOME");
+    if (const char* h = std::getenv("HOME")) home = h;
 #endif
-    if (!home) home = ".";
-    fs::path dir = fs::path(home) / ".infinite_canvas" / "projects";
-    fs::create_directories(dir);
-    return dir.string();
+    if (home.empty()) home = ".";
+    const fs::path dir = home / ".infinite_canvas" / "projects";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return path::toUtf8(dir);
+}
+
+std::string ProjectManager::suggestPath(const std::string& name) {
+    const fs::path dir = path::fromUtf8(defaultProjectsDir());
+    const std::string base = sanitizeName(name);
+    fs::path candidate = dir / path::fromUtf8(base + ".canvas");
+    for (int n = 2; fs::exists(candidate); ++n) candidate = dir / path::fromUtf8(base + "_" + std::to_string(n) + ".canvas");
+    return path::toUtf8(candidate);
+}
+
+ProjectInfo* ProjectManager::find(const std::string& uuid) {
+    for (auto& p : projects_) {
+        if (p.uuid == uuid) return &p;
+    }
+    return nullptr;
 }
 
 void ProjectManager::setupAutoSave(const std::string& uuid) {
     auto it = canvases_.find(uuid);
-    if (it == canvases_.end() || !storage_) return;
+    ProjectInfo* info = find(uuid);
+    if (it == canvases_.end() || !info) return;
 
-    auto pIt = std::find_if(projects_.begin(), projects_.end(),
-        [&](const ProjectInfo& p) { return p.uuid == uuid; });
-    if (pIt == projects_.end()) return;
+    it->second->onChanged([this, uuid](const std::set<std::string>& changed, bool canvasChanged) {
+        ProjectInfo* p = find(uuid);
+        auto c = canvases_.find(uuid);
+        if (!p || p->path.empty() || c == canvases_.end()) return;  // not saved yet: nothing to auto-save
 
-    // Canvas onChanged callback: save node changes incrementally and config changes fully.
-    it->second->onChanged([this, uuid, path = pIt->path](const std::set<std::string>& changedUuids,
-                                                         bool canvasChanged) {
-        if (path.empty() || !storage_) return; // Not yet saved to disk
-
-        auto canvasIt = canvases_.find(uuid);
-        if (canvasIt == canvases_.end()) return;
-
+        bool ok = true;
         if (canvasChanged) {
-            if (storage_->saveCanvas(*canvasIt->second, path)) {
-                if (auto info = findProject(uuid)) {
-                    info->modifiedAt = std::time(nullptr);
+            // Structural change: rewrite everything so deleted nodes'
+            // files are removed too.
+            ok = storage_->saveCanvas(*c->second, p->path);
+        } else {
+            const uint64_t now = clock::unixSeconds();
+            for (const auto& nodeUuid : changed) {
+                if (auto node = c->second->getNode(nodeUuid)) {
+                    node->modifiedAt = now;
+                    ok = storage_->saveNode(*node, p->path) && ok;
                 }
             }
-            return;
         }
-
-        for (const auto& nodeUuid : changedUuids) {
-            auto node = canvasIt->second->getNode(nodeUuid);
-            if (node) {
-                node->modifiedAt = static_cast<uint64_t>(
-                    std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count());
-                storage_->saveNode(node.get(), path);
-            }
-        }
+        if (ok) p->modifiedAt = clock::unixSeconds();
+        else autoSaveError_ = "Auto-save failed: " + storage_->lastError();
     });
-
-    // Set project path so canvas knows where to save
-    it->second->setProjectPath(pIt->path);
 }
 
 std::string ProjectManager::createProject(const std::string& name) {
-    std::string uuid = generateProjectUuid();
     auto canvas = std::make_unique<Canvas>();
     canvas->canvasName = name;
-    canvas->createdAt = std::time(nullptr);
-    canvas->modifiedAt = canvas->createdAt;
+    canvas->createdAt = canvas->modifiedAt = clock::unixSeconds();
 
     ProjectInfo info;
-    info.uuid = uuid;
+    info.uuid = Uuid::generate();
     info.name = name;
-    info.path.clear();
-    info.createdAt = canvas->createdAt;
-    info.modifiedAt = info.createdAt;
+    info.createdAt = info.modifiedAt = canvas->createdAt;
 
-    canvases_[uuid] = std::move(canvas);
+    canvases_[info.uuid] = std::move(canvas);
     projects_.push_back(info);
-
-    switchTo(uuid);
-    return uuid;
+    setupAutoSave(info.uuid);
+    switchTo(info.uuid);
+    return info.uuid;
 }
 
 std::string ProjectManager::openProject(const std::string& path) {
-    if (!storage_ || !storage_->isValid(path)) {
-        std::cerr << "Invalid project path: " << path << "\n";
+    // Already open? Just switch to it.
+    for (const auto& p : projects_) {
+        std::error_code ec;
+        if (!p.path.empty() && fs::equivalent(path::fromUtf8(p.path), path::fromUtf8(path), ec)) {
+            switchTo(p.uuid);
+            return p.uuid;
+        }
+    }
+    if (!storage_->isValid(path)) {
+        lastError_ = "Not a project: " + path;
         return "";
     }
-
     auto canvas = std::make_unique<Canvas>();
     if (!storage_->loadCanvas(*canvas, path)) {
-        std::cerr << "Failed to load project: " << path << "\n";
+        lastError_ = storage_->lastError();
         return "";
     }
 
-    std::string uuid = generateProjectUuid();
-    canvas->modifiedAt = std::time(nullptr);
-
     ProjectInfo info;
-    info.uuid = uuid;
-    info.name = canvas->canvasName;
+    info.uuid = Uuid::generate();
+    info.name = canvas->canvasName.empty() ? path::toUtf8(path::fromUtf8(path).stem()) : canvas->canvasName;
     info.path = path;
     info.createdAt = canvas->createdAt;
     info.modifiedAt = canvas->modifiedAt;
 
-    canvases_[uuid] = std::move(canvas);
+    canvases_[info.uuid] = std::move(canvas);
     projects_.push_back(info);
-    addRecent(path);
-
-    switchTo(uuid);
-
-    // Enable auto-save after project is fully loaded and has a path
-    setupAutoSave(uuid);
-    return uuid;
+    setupAutoSave(info.uuid);
+    switchTo(info.uuid);
+    return info.uuid;
 }
 
 bool ProjectManager::closeProject(const std::string& uuid) {
-    auto info = findProject(uuid);
-    if (!info) return false;
+    auto it = canvases_.find(uuid);
+    if (it == canvases_.end()) return false;
+    it->second->flushChanges();
 
-    // Flush pending changes before closing
-    auto canvasIt = canvases_.find(uuid);
-    if (canvasIt != canvases_.end()) {
-        canvasIt->second->flushChanges();
-    }
-
-    if (onBeforeClose_) {
-        if (!onBeforeClose_(*info)) return false;
-    }
-
-    projects_.erase(
-        std::remove_if(projects_.begin(), projects_.end(),
-            [&](const ProjectInfo& p) { return p.uuid == uuid; }),
-        projects_.end());
-
-    canvases_.erase(uuid);
-
-    if (activeUuid_ == uuid) {
-        activeUuid_ = projects_.empty() ? "" : projects_.back().uuid;
-        notifyActiveChanged();
-    }
-
+    canvases_.erase(it);
+    projects_.erase(std::remove_if(projects_.begin(), projects_.end(), [&](const ProjectInfo& p) { return p.uuid == uuid; }),
+                    projects_.end());
+    if (activeUuid_ == uuid) activeUuid_ = projects_.empty() ? "" : projects_.back().uuid;
     return true;
 }
 
 void ProjectManager::closeAll() {
-    for (auto it = projects_.rbegin(); it != projects_.rend(); ++it) {
-        closeProject(it->uuid);
-    }
+    // Collect first: closeProject() mutates projects_.
+    std::vector<std::string> ids;
+    for (const auto& p : projects_) ids.push_back(p.uuid);
+    for (const auto& id : ids) closeProject(id);
 }
 
 void ProjectManager::switchTo(const std::string& uuid) {
-    if (canvases_.find(uuid) == canvases_.end()) return;
-    activeUuid_ = uuid;
-    notifyActiveChanged();
+    if (canvases_.count(uuid)) activeUuid_ = uuid;
 }
 
 bool ProjectManager::saveCurrent() {
-    auto info = activeProject();
-    if (!info || !storage_) return false;
+    ProjectInfo* info = activeProject();
+    if (!info) return false;
+    if (info->path.empty()) return saveAs(suggestPath(info->name));
 
-    if (info->path.empty()) {
-        return saveAs(defaultProjectPath(*info));
+    Canvas* canvas = activeCanvas();
+    canvas->flushChanges();
+    if (!storage_->saveCanvas(*canvas, info->path)) {
+        lastError_ = storage_->lastError();
+        return false;
     }
-
-    auto it = canvases_.find(info->uuid);
-    if (it == canvases_.end()) return false;
-
-    // Flush pending changes first
-    it->second->flushChanges();
-
-    bool ok = storage_->saveCanvas(*(it->second), info->path);
-    if (ok) {
-        info->modifiedAt = std::time(nullptr);
-        setupAutoSave(info->uuid); // Re-enable auto-save after full save
-    }
-    return ok;
+    info->modifiedAt = clock::unixSeconds();
+    return true;
 }
 
-bool ProjectManager::saveAs(const std::string& newPath) {
-    auto info = activeProject();
-    if (!info || !storage_) return false;
+bool ProjectManager::saveAs(const std::string& path) {
+    ProjectInfo* info = activeProject();
+    Canvas* canvas = activeCanvas();
+    if (!info || !canvas) return false;
 
-    auto it = canvases_.find(info->uuid);
-    if (it == canvases_.end()) return false;
-
-    // Flush pending changes first
-    it->second->flushChanges();
-
-    bool ok = storage_->saveCanvas(*(it->second), newPath);
-    if (ok) {
-        info->path = newPath;
-        info->modifiedAt = std::time(nullptr);
-        addRecent(newPath);
-        setupAutoSave(info->uuid);
+    if (!storage_->saveCanvas(*canvas, path)) {
+        lastError_ = storage_->lastError();
+        return false;
     }
-    return ok;
-}
-
-void ProjectManager::processAutoSave() {
-    for (auto& [_, canvas] : canvases_) {
-        canvas->processPendingChanges();
-    }
-}
-
-bool ProjectManager::revert() {
-    auto info = activeProject();
-    if (!info || !storage_ || info->path.empty()) return false;
-
-    auto it = canvases_.find(info->uuid);
-    if (it == canvases_.end()) return false;
-
-    // Flush pending changes before reload
-    it->second->flushChanges();
-
-    if (!storage_->loadCanvas(*(it->second), info->path)) return false;
-
-    info->modifiedAt = std::time(nullptr);
+    info->path = path;
+    info->name = canvas->canvasName.empty() ? info->name : canvas->canvasName;
+    info->modifiedAt = clock::unixSeconds();
+    // Anything pending is already on disk now.
+    canvas->discardPendingChanges();
     setupAutoSave(info->uuid);
     return true;
 }
 
+bool ProjectManager::revert() {
+    ProjectInfo* info = activeProject();
+    Canvas* canvas = activeCanvas();
+    if (!info || !canvas || info->path.empty()) return false;
+
+    // Discard pending edits instead of saving them first: that's the point.
+    canvas->discardPendingChanges();
+    const bool ok = storage_->loadCanvas(*canvas, info->path);
+    if (!ok) lastError_ = storage_->lastError();
+    return ok;
+}
+
+void ProjectManager::processAutoSave() {
+    for (auto& [_, c] : canvases_) c->processPendingChanges();
+}
+
+void ProjectManager::flushAll() {
+    for (auto& [_, c] : canvases_) c->flushChanges();
+}
+
+std::string ProjectManager::takeAutoSaveError() {
+    std::string e;
+    e.swap(autoSaveError_);
+    return e;
+}
+
 Canvas* ProjectManager::activeCanvas() {
-    if (activeUuid_.empty() || canvases_.find(activeUuid_) == canvases_.end())
-        return nullptr;
-    return canvases_[activeUuid_].get();
+    auto it = canvases_.find(activeUuid_);
+    return it != canvases_.end() ? it->second.get() : nullptr;
 }
 
 const Canvas* ProjectManager::activeCanvas() const {
-    if (activeUuid_.empty() || canvases_.find(activeUuid_) == canvases_.end())
-        return nullptr;
-    return canvases_.at(activeUuid_).get();
+    auto it = canvases_.find(activeUuid_);
+    return it != canvases_.end() ? it->second.get() : nullptr;
 }
 
 ProjectInfo* ProjectManager::activeProject() {
-    return findProject(activeUuid_);
+    return find(activeUuid_);
 }
 
 const ProjectInfo* ProjectManager::activeProject() const {
-    return findProject(activeUuid_);
-}
-
-ProjectInfo* ProjectManager::findProject(const std::string& uuid) const {
-    for (auto& p : projects_) {
-        if (p.uuid == uuid) return const_cast<ProjectInfo*>(&p);
+    for (const auto& p : projects_) {
+        if (p.uuid == activeUuid_) return &p;
     }
     return nullptr;
 }
 
 std::vector<std::string> ProjectManager::listSavedProjects() const {
-    if (!storage_) return {};
     return storage_->listCanvases(defaultProjectsDir());
 }
 
-std::vector<std::string> ProjectManager::recentProjects(int maxCount) const {
-    std::vector<std::string> result;
-    for (int i = 0; i < maxCount && i < static_cast<int>(recentPaths_.size()); i++) {
-        result.push_back(recentPaths_[i]);
-    }
-    return result;
-}
-
- std::string ProjectManager::generateProjectUuid() {
-    return Uuid::generate();
-}
-
-void ProjectManager::addRecent(const std::string& path) {
-    recentPaths_.erase(
-        std::remove(recentPaths_.begin(), recentPaths_.end(), path),
-        recentPaths_.end());
-    recentPaths_.insert(recentPaths_.begin(), path);
-    if (recentPaths_.size() > 10) {
-        recentPaths_.resize(10);
-    }
-}
-
-void ProjectManager::notifyActiveChanged() {
-    if (onActiveChanged_) {
-        onActiveChanged_(findProject(activeUuid_));
-    }
-}
-
-std::string ProjectInfo::relativePath() const {
-    if (path.empty()) return "[Untitled]";
-    fs::path p(path);
-    fs::path parent = p.parent_path();
-    return (parent.filename() / p.filename()).string();
-}
-
-} // namespace ic
+}  // namespace ic

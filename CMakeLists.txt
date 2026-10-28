@@ -1,113 +1,93 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(infinite_canvas
-    VERSION 0.1.0
+    VERSION 0.2.0
+    DESCRIPTION "Infinite Canvas - zoomable nested-box outliner for the terminal"
     LANGUAGES CXX
-    DESCRIPTION "Infinite Canvas - Fractal text-based design tool"
 )
+
+option(IC_BUILD_TESTS "Build the unit tests" ON)
+option(IC_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# ============================================================================
-# Source files
-# ============================================================================
-set(MODEL_SOURCES
-    src/model/node.cpp
-    src/model/connection.cpp
-    src/model/canvas.cpp
-)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
-set(STORAGE_SOURCES
-    src/storage/json_storage.cpp
-)
+# Shared warning / encoding settings for every target.
+add_library(ic_options INTERFACE)
+if(MSVC)
+    # Sources contain UTF-8 box-drawing characters.
+    target_compile_options(ic_options INTERFACE /W4 /utf-8 /permissive-)
+    target_compile_definitions(ic_options INTERFACE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+    if(IC_WARNINGS_AS_ERRORS)
+        target_compile_options(ic_options INTERFACE /WX)
+    endif()
+else()
+    target_compile_options(ic_options INTERFACE -Wall -Wextra -Wpedantic -Wshadow)
+    if(IC_WARNINGS_AS_ERRORS)
+        target_compile_options(ic_options INTERFACE -Werror)
+    endif()
+endif()
+if(MINGW)
+    # Self-contained executables: no dependency on whichever MinGW runtime
+    # DLLs happen to be first on PATH.
+    target_link_options(ic_options INTERFACE -static)
+endif()
 
-set(VIEW_SOURCES
-    src/view/console_renderer.cpp
-)
-
-set(INPUT_SOURCES
-    src/input/handler.cpp
-    src/input/console_input.cpp
-)
-
-set(APP_SOURCES
-    src/app/app.cpp
-    src/app/project_manager.cpp
-    src/app/project_menu.cpp
-    src/main.cpp
-)
-
-set(ALL_SOURCES
-    ${MODEL_SOURCES}
-    ${STORAGE_SOURCES}
-    ${VIEW_SOURCES}
-    ${INPUT_SOURCES}
-    ${APP_SOURCES}
-)
-
-# ============================================================================
-# Include directories
-# ============================================================================
-include_directories(
-    include
-)
-
-# ============================================================================
-# Library (core)
-# ============================================================================
+# ----------------------------------------------------------------------------
+# Core: model, storage, layout/rendering into a cell buffer, input logic.
+# Platform independent, so it builds and is tested on any OS.
+# ----------------------------------------------------------------------------
 add_library(infinite_canvas_core STATIC
-    ${MODEL_SOURCES}
-    ${STORAGE_SOURCES}
-    ${VIEW_SOURCES}
-    ${INPUT_SOURCES}
-    src/app/app.cpp
+    src/util/json.cpp
+    src/model/node.cpp
+    src/model/canvas.cpp
+    src/storage/json_storage.cpp
+    src/view/console_renderer.cpp
+    src/input/handler.cpp
     src/app/project_manager.cpp
-    src/app/project_menu.cpp
+    src/app/demo.cpp
 )
+target_include_directories(infinite_canvas_core PUBLIC include)
+target_link_libraries(infinite_canvas_core PUBLIC ic_options)
 
-target_include_directories(infinite_canvas_core
-    PUBLIC include
-    PRIVATE include
-)
-
-# Compiler warnings
-target_compile_options(infinite_canvas_core PRIVATE
-    $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Wpedantic>
-    $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -Wpedantic>
-    $<$<CXX_COMPILER_ID:MSVC>:/W4>
-)
-
-# ============================================================================
-# Executable
-# ============================================================================
+# ----------------------------------------------------------------------------
+# Executable. The interactive editor uses the Win32 console API; elsewhere
+# the binary still supports --snapshot (headless rendering).
+# ----------------------------------------------------------------------------
 add_executable(infinite_canvas src/main.cpp)
-
 target_link_libraries(infinite_canvas PRIVATE infinite_canvas_core)
 
-target_compile_options(infinite_canvas PRIVATE
-    $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Wpedantic>
-    $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -Wpedantic>
-    $<$<CXX_COMPILER_ID:MSVC>:/W4>
-)
+if(WIN32)
+    target_sources(infinite_canvas PRIVATE
+        src/app/app.cpp
+        src/platform/console_input.cpp
+        src/platform/console_output.cpp
+        src/platform/popup_menu.cpp
+    )
+endif()
 
-# ============================================================================
-# Install
-# ============================================================================
-install(TARGETS infinite_canvas infinite_canvas_core
-    RUNTIME DESTINATION bin
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-)
+install(TARGETS infinite_canvas RUNTIME DESTINATION bin)
 
-install(DIRECTORY include/ DESTINATION include)
-
-# ============================================================================
-# Version config (generated)
-# ============================================================================
-configure_file(
-    "${CMAKE_SOURCE_DIR}/include/version/version.h"
-    "${CMAKE_SOURCE_DIR}/include/version/version.h"
-    COPYONLY
-)
+# ----------------------------------------------------------------------------
+# Tests
+# ----------------------------------------------------------------------------
+if(IC_BUILD_TESTS)
+    enable_testing()
+    add_executable(ic_tests
+        tests/test_main.cpp
+        tests/test_utf8.cpp
+        tests/test_json.cpp
+        tests/test_canvas.cpp
+        tests/test_storage.cpp
+        tests/test_renderer.cpp
+        tests/test_input.cpp
+    )
+    target_link_libraries(ic_tests PRIVATE infinite_canvas_core)
+    add_test(NAME unit_tests COMMAND ic_tests)
+endif()

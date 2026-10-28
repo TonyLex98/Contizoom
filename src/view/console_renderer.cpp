@@ -1,1203 +1,628 @@
 #include "view/console_renderer.h"
-#include "model/canvas.h"
-#include "model/node.h"
-#include "model/connection.h"
-#include "version/version.h"
+#include "util/utf8.h"
+
 #include <algorithm>
 #include <cmath>
 #include <sstream>
 #include <vector>
-#include <string>
-#include <map>
-#include <set>
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
-#endif
-#include <windows.h>
 
 namespace ic {
 
-// Full box: large enough for a bordered box with its name label.
-static bool shouldDrawNodeBox(const ScreenRect& sr) {
+namespace {
+
+// Every glyph used here is in the WGL4 set, so it renders with the stock
+// Windows console fonts (Consolas, Lucida Console, Cascadia).
+struct BoxStyle {
+    wchar_t tl, tr, bl, br, h, v;
+    uint16_t border, text, name;
+};
+
+BoxStyle styleFor(NodeState state) {
+    switch (state) {
+        case NodeState::Selected:
+            return {L'╔', L'╗', L'╚', L'╝', L'═', L'║', color::White, color::White, color::BrightYellow};
+        case NodeState::Hovered:
+            return {L'┌', L'┐', L'└', L'┘', L'─', L'│', color::BrightGreen, color::Gray, color::BrightYellow};
+        case NodeState::InConnection:
+            return {L'┌', L'┐', L'└', L'┘', L'─', L'│', color::BrightRed, color::Gray, color::BrightYellow};
+        case NodeState::Normal: break;
+    }
+    return {L'┌', L'┐', L'└', L'┘', L'─', L'│', color::Cyan, color::Gray, color::BrightYellow};
+}
+
+// Big enough for a bordered box with a name label.
+bool isFullBox(const ScreenRect& sr) {
     return sr.w >= 4.0 && sr.h >= 2.0;
 }
 
-// Compact box: too small for a name label, but still large enough for
-// drawNodeAt to render real borders (matches its own w<2||h<2 dot cutoff).
-// Nodes in this range must NOT be collapsed to a single-cell marker - they
-// have real, distinct screen area and should keep it.
-static bool canRenderAsBox(const ScreenRect& sr) {
+// Too small for a label but still a real box (not a single-cell marker).
+bool isCompactBox(const ScreenRect& sr) {
     return sr.w >= 2.0 && sr.h >= 2.0;
 }
 
-// Integer right/bottom edge as floor(x+w), NOT floor(x)+floor(w). A box's
-// own drawn width must be derived the same way its children's containment
-// was checked against it (computeScreenRect clamps children against the
-// float edge x+w) - otherwise the two disagree by up to a cell and a child
-// that was correctly kept inside the parent in float space ends up drawn
-// past the parent's actual last row/column once both are rounded down
-// independently.
-static int floorEdge(double origin, double extent) {
-    return static_cast<int>(std::floor(origin + extent));
-}
-
-// Connection anchor points: 3 evenly spaced points each along the Left,
-// Right and Bottom edges (Top is skipped - that row is reserved for the
-// name label, an anchor there would sit under the text). Ordinal mirrors
-// AnchorHover: 0=Left, 1=Right, 2=Bottom; index 0/1/2 = quarter/half/
-// three-quarter along that edge.
-static bool anchorPoint(int ox, int oy, int w, int h, int edge, int index, int& px, int& py) {
-    double frac = (index + 1) / 4.0; // 0.25, 0.5, 0.75
-    switch (edge) {
-        case 0: px = ox;         py = oy + static_cast<int>(std::round(frac * (h - 1))); return true;
-        case 1: px = ox + w - 1; py = oy + static_cast<int>(std::round(frac * (h - 1))); return true;
-        case 2: px = ox + static_cast<int>(std::round(frac * (w - 1))); py = oy + h - 1;  return true;
-        default: return false;
+std::vector<std::string> splitLines(const std::string& text) {
+    std::vector<std::string> lines(1);
+    for (const char c : text) {
+        if (c == '\n') lines.emplace_back();
+        else if (c != '\r') lines.back() += c;
     }
+    return lines;
 }
 
-// Below this, quarter/three-quarter points would round onto the corners or
-// each other - not worth showing.
-static bool canShowAnchors(int w, int h) {
-    return w >= 8 && h >= 6;
+std::string firstLine(const std::string& text) {
+    return text.substr(0, text.find('\n'));
 }
 
-ConsoleRenderer::ConsoleRenderer() {
-    hOut_ = GetStdHandle(STD_OUTPUT_HANDLE);
+// Glyph joining the given sides of a cell (for connection bends).
+wchar_t junction(bool up, bool down, bool left, bool right) {
+    if ((up || down) && !left && !right) return L'│';
+    if ((left || right) && !up && !down) return L'─';
+    if (down && right && !up && !left) return L'┌';
+    if (down && left && !up && !right) return L'┐';
+    if (up && right && !down && !left) return L'└';
+    if (up && left && !down && !right) return L'┘';
+    return L'┼';
 }
 
-void ConsoleRenderer::initialize(int w, int h) {
-    viewWidth_ = w;
-    viewHeight_ = h;
-    buffer_.resize(w * h);
-    canvasArea_ = CanvasArea::withSidebar(w, h);
-    DWORD outMode = 0;
-    GetConsoleMode(hOut_, &outMode);
-    outMode &= ~ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-    SetConsoleMode(hOut_, outMode);
+int sign(int v) {
+    return (v > 0) - (v < 0);
 }
 
-void ConsoleRenderer::clear() {
-    fillBuffer();
-    flush();
-}
+}  // namespace
 
-void ConsoleRenderer::flush() {
-    std::vector<CHAR_INFO> ci(viewWidth_ * viewHeight_);
-    for (int i = 0; i < viewWidth_ * viewHeight_; i++) {
-        ci[i].Char.UnicodeChar = buffer_[i].ch;
-        ci[i].Attributes = static_cast<WORD>(buffer_[i].attr);
-    }
-    COORD size = { static_cast<SHORT>(viewWidth_), static_cast<SHORT>(viewHeight_) };
-    COORD origin = { 0, 0 };
-    SMALL_RECT region = { 0, 0, size.X - 1, size.Y - 1 };
-    WriteConsoleOutputW(hOut_, ci.data(), size, origin, &region);
+void ConsoleRenderer::resize(int width, int height) {
+    buffer_.resize(width, height);
+    canvasArea_ = CanvasArea::forConsole(width, height);
 }
 
 // ====================================================================
-// Screen rect computation: roots via worldToScreen, children relative to parent
+// Layout
 // ====================================================================
-ScreenRect ConsoleRenderer::computeScreenRect(const Node* node, const Canvas& canvas,
-                                                const Viewport& vp, int vw, int vh) {
-    auto it = screenRects_.find(node->uuid);
-    if (it != screenRects_.end()) return it->second;
 
-    auto parent = canvas.getNode(node->parentId);
-    if (parent) {
-        // Children are positioned inside parent on screen
-        ScreenRect parentSr = computeScreenRect(parent.get(), canvas, vp, vw, vh);
-        double pw = parent->rect.width;
-        double ph = parent->rect.height;
-        double relX = pw > 0 ? node->rect.x / pw : 0.0;
-        double relY = ph > 0 ? node->rect.y / ph : 0.0;
-        double relW = pw > 0 ? node->rect.width / pw : 0.1;
-        double relH = ph > 0 ? node->rect.height / ph : 0.2;
+ScreenRect ConsoleRenderer::computeScreenRect(const Node& node, const Canvas& canvas) {
+    if (auto it = screenRects_.find(node.uuid); it != screenRects_.end()) return it->second;
 
-        ScreenRect sr;
-        sr.x = parentSr.x + relX * parentSr.w;
-        sr.y = parentSr.y + relY * parentSr.h;
-        sr.w = relW * parentSr.w;
-        sr.h = relH * parentSr.h;
+    ScreenRect sr;
+    if (auto parent = canvas.getNode(node.parentId)) {
+        // Children are laid out proportionally inside the parent's box.
+        const ScreenRect psr = computeScreenRect(*parent, canvas);
+        const double pw = parent->rect.width, ph = parent->rect.height;
+        sr.x = psr.x + (pw > 0 ? node.rect.x / pw : 0.0) * psr.w;
+        sr.y = psr.y + (ph > 0 ? node.rect.y / ph : 0.0) * psr.h;
+        sr.w = (pw > 0 ? node.rect.width / pw : 0.1) * psr.w;
+        sr.h = (ph > 0 ? node.rect.height / ph : 0.2) * psr.h;
 
-        // Clamp strictly inside the parent's own rendered box (inset by its
-        // 1-char border). The parent's box and a child's position each get
-        // cast to integer character cells independently and with different
-        // rounding (floor for box dimensions, round() for point markers) -
-        // without this, a child positioned near the parent's edge can drift
-        // past the parent's border once both are rounded, and the drift
-        // compounds across nested levels of parent/child.
-        double innerX0 = parentSr.x + 1.0;
-        double innerY0 = parentSr.y + 1.0;
-        double innerX1 = parentSr.x + parentSr.w - 1.0;
-        double innerY1 = parentSr.y + parentSr.h - 1.0;
-        if (innerX1 > innerX0 && innerY1 > innerY0) {
-            sr.x = std::min(std::max(sr.x, innerX0), innerX1);
-            sr.y = std::min(std::max(sr.y, innerY0), innerY1);
-            sr.w = std::min(sr.w, innerX1 - sr.x);
-            sr.h = std::min(sr.h, innerY1 - sr.y);
+        // Keep the child strictly inside the parent's border. Without this,
+        // independent rounding of parent and child lets a child near the
+        // edge drift onto the border, and the drift compounds per level.
+        const double ix0 = psr.x + 1.0, iy0 = psr.y + 1.0;
+        const double ix1 = psr.x + psr.w - 1.0, iy1 = psr.y + psr.h - 1.0;
+        if (ix1 > ix0 && iy1 > iy0) {
+            sr.x = std::clamp(sr.x, ix0, ix1);
+            sr.y = std::clamp(sr.y, iy0, iy1);
+            sr.w = std::min(sr.w, ix1 - sr.x);
+            sr.h = std::min(sr.h, iy1 - sr.y);
         }
         sr.w = std::max(0.0, sr.w);
         sr.h = std::max(0.0, sr.h);
-
-        screenRects_[node->uuid] = sr;
-        return sr;
-    }
-
-    // Root node: position via worldToScreen
-    Rect world = canvas.computeWorldRect(node->uuid);
-    int depthDiff = node->zoomLevel - vp.zoomLevel;
-    double scale = vp.textScale;
-    if (depthDiff < 0) {
-        for (int i = 0; i < -depthDiff; i++) scale *= 2.0;
     } else {
-        for (int i = 0; i < depthDiff; i++) scale *= 0.5;
+        const Viewport& vp = canvas.viewport;
+        sr.x = (node.rect.x - vp.centerX) * vp.scale + canvasArea_.centerX();
+        sr.y = (node.rect.y - vp.centerY) * vp.scale + canvasArea_.centerY();
+        sr.w = node.rect.width * vp.scale;
+        sr.h = node.rect.height * vp.scale;
     }
-
-    double cx = canvasArea_.centerX();
-    double cy = canvasArea_.centerY();
-    ScreenRect sr;
-    sr.x = (world.x - vp.centerX) * vp.textScale + cx;
-    sr.y = (world.y - vp.centerY) * vp.textScale + cy;
-    sr.w = world.width * scale;
-    sr.h = world.height * scale;
-    screenRects_[node->uuid] = sr;
+    screenRects_[node.uuid] = sr;
     return sr;
 }
 
-// ====================================================================
-// Full render
-// ====================================================================
-void ConsoleRenderer::render(const Canvas& canvas) {
-    fillBuffer();
+void ConsoleRenderer::render(const Canvas& canvas, const UiState& ui, const HudInfo& hud) {
+    buffer_.clear();
     screenRects_.clear();
-    sidebarNodeRects_.clear();
+    sidebarRects_.clear();
 
-    int vw = viewWidth_;
-    int vh = viewHeight_;
-    const auto& vp = canvas.viewport_;
-    auto nodes = canvas.getVisibleNodes(vp, static_cast<double>(vw), static_cast<double>(vh));
-
-    // Compute screen rects for all visible nodes (with caching)
+    auto visible = canvas.getVisibleNodes(canvas.viewport, canvasArea_.width(), canvasArea_.height());
     std::vector<const Node*> sorted;
-    for (const auto& n : nodes) {
-        computeScreenRect(n.get(), canvas, vp, vw, vh);
+    sorted.reserve(visible.size());
+    for (const auto& n : visible) {
+        computeScreenRect(*n, canvas);
         sorted.push_back(n.get());
     }
-    std::sort(sorted.begin(), sorted.end(), [](const Node* a, const Node* b) {
-        return a->zoomLevel < b->zoomLevel;
-    });
+    // Parents before children.
+    std::stable_sort(sorted.begin(), sorted.end(), [](const Node* a, const Node* b) { return a->depth < b->depth; });
 
+    // A node's children are only drawn individually once the node itself is
+    // a full box with real interior room. Until then the parent's own box or
+    // marker represents its whole subtree, which keeps zoomed-out views
+    // readable instead of collapsing every level into overlapping noise.
+    std::set<std::string> fullBoxes, compactBoxes, canHostChildren;
+    for (const Node* node : sorted) {
+        if (!node->parentId.empty() && !canHostChildren.count(node->parentId)) continue;
+        const ScreenRect& sr = screenRects_[node->uuid];
+        if (isFullBox(sr)) {
+            fullBoxes.insert(node->uuid);
+            const CellBox b = cellBox(sr);
+            if (b.w >= 3 && b.h >= 3) canHostChildren.insert(node->uuid);
+        } else if (isCompactBox(sr)) {
+            compactBoxes.insert(node->uuid);
+        }
+    }
+
+    std::set<std::string> drawn = fullBoxes;
+    drawn.insert(compactBoxes.begin(), compactBoxes.end());
+
+    // Point-sized nodes compete for single cells; several landing on the
+    // same cell become one cluster marker.
     auto markerCell = [](const ScreenRect& sr) {
-        return std::pair<int, int>{
-            static_cast<int>(std::round(sr.centerX())),
-            static_cast<int>(std::round(sr.centerY()))
-        };
+        return std::pair<int, int>{static_cast<int>(std::round(sr.centerX())), static_cast<int>(std::round(sr.centerY()))};
     };
+    std::map<std::pair<int, int>, int> cellCounts;
+    std::map<std::pair<int, int>, std::string> cellOwner;
+    for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
+        const Node* node = *it;
+        if (drawn.count(node->uuid)) continue;
+        if (!node->parentId.empty() && !canHostChildren.count(node->parentId)) continue;
+        const ScreenRect& sr = screenRects_[node->uuid];
+        if (!sr.valid()) continue;
+        const auto cell = markerCell(sr);
+        if (!canvasArea_.contains(cell.first, cell.second)) continue;
+        if (++cellCounts[cell] == 1) {
+            cellOwner[cell] = node->uuid;
+            drawn.insert(node->uuid);
+        }
+    }
+    std::set<std::string> clusters;
+    for (const auto& [cell, count] : cellCounts) {
+        if (count > 1) clusters.insert(cellOwner[cell]);
+    }
 
-    auto markerVisible = [&](const ScreenRect& sr) {
+    // Snap markers to one cell, kept inside the parent's interior.
+    for (const auto& uuid : drawn) {
+        if (fullBoxes.count(uuid) || compactBoxes.count(uuid)) continue;
+        ScreenRect& sr = screenRects_[uuid];
         auto [x, y] = markerCell(sr);
-        return canvasArea_.contains(x, y);
-    };
-
-    // A node's children are only drawn individually if the node itself opened
-    // up into a full labeled box AND actually has interior room for them -
-    // a 4x2 box clears shouldDrawNodeBox but is just a header+footer with
-    // zero content rows, so anything clamped "inside" it is squeezed to
-    // nothing and drifts onto or past its border anyway. If a folder is
-    // still collapsed down to a compact box, a dot, or a box with no real
-    // interior, there is no room to also show its contents without every
-    // level of the hierarchy overlapping into unreadable noise - the
-    // folder's own (possibly tiny) marker stands in for its whole subtree
-    // until you zoom in enough for it to become a full box itself. sorted is
-    // ascending by zoomLevel, so parents are always visited before children.
-    std::set<std::string> boxNodes;         // full box + name label
-    std::set<std::string> compactNodes;     // small but real box, no name label
-    std::set<std::string> canHostChildren;  // full box AND has real interior space
-    for (const auto* node : sorted) {
-        bool parentEligible = node->parentId.empty() || canHostChildren.count(node->parentId) > 0;
-        if (!parentEligible) continue;
-
-        auto it = screenRects_.find(node->uuid);
-        if (it == screenRects_.end()) continue;
-        const ScreenRect& sr = it->second;
-        if (shouldDrawNodeBox(sr)) {
-            boxNodes.insert(node->uuid);
-            int ox = static_cast<int>(std::floor(sr.x));
-            int oy = static_cast<int>(std::floor(sr.y));
-            int ex = floorEdge(sr.x, sr.w);
-            int ey = floorEdge(sr.y, sr.h);
-            if (ex - ox >= 3 && ey - oy >= 3) {
-                canHostChildren.insert(node->uuid);
-            }
-        } else if (canRenderAsBox(sr)) {
-            compactNodes.insert(node->uuid);
+        if (auto n = canvas.getNode(uuid); n && !n->parentId.empty()) {
+            const CellBox p = cellBox(screenRects_[n->parentId]);
+            if (p.right() - 1 >= p.x + 1) x = std::clamp(x, p.x + 1, p.right() - 1);
+            if (p.bottom() - 1 >= p.y + 1) y = std::clamp(y, p.y + 1, p.bottom() - 1);
         }
+        sr = ScreenRect{static_cast<double>(x), static_cast<double>(y), 1.0, 1.0};
     }
 
-    // Boxes and compact boxes occupy real, distinct screen area and are always
-    // drawn as-is. Only genuine point-sized nodes (below canRenderAsBox) are
-    // small enough that several of them can round to the same screen cell -
-    // those compete for that single cell below.
-    std::set<std::string> drawnNodes = boxNodes;
-    drawnNodes.insert(compactNodes.begin(), compactNodes.end());
-
-    std::map<std::pair<int, int>, int> markerCellCounts;
-    std::map<std::pair<int, int>, std::string> markerCellOwner;
-    for (auto rit = sorted.rbegin(); rit != sorted.rend(); ++rit) {
-        const auto* node = *rit;
-        if (drawnNodes.count(node->uuid)) continue;
-        // Same rule as boxes/compact boxes: a node whose parent has no real
-        // interior room doesn't get its own dot either - the collapsed
-        // ancestor already represents it.
-        bool parentEligible = node->parentId.empty() || canHostChildren.count(node->parentId) > 0;
-        if (!parentEligible) continue;
-        auto it = screenRects_.find(node->uuid);
-        if (it == screenRects_.end() || !it->second.valid() || !markerVisible(it->second)) continue;
-
-        auto cell = markerCell(it->second);
-        int& count = markerCellCounts[cell];
-        count++;
-        if (count == 1) {
-            markerCellOwner[cell] = node->uuid;
-            drawnNodes.insert(node->uuid);
-        }
-    }
-    // Cells where 2+ nodes collapsed onto the same point: render distinctly
-    // (a cluster marker) instead of quietly showing one node's ordinary dot
-    // as if nothing else were there.
-    std::set<std::string> clusterNodes;
-    for (const auto& [cell, count] : markerCellCounts) {
-        if (count > 1) clusterNodes.insert(markerCellOwner[cell]);
-    }
-    for (const auto& uuid : drawnNodes) {
-        if (boxNodes.count(uuid) || compactNodes.count(uuid)) continue;
-        auto it = screenRects_.find(uuid);
-        if (it == screenRects_.end()) continue;
-        auto [x, y] = markerCell(it->second);
-
-        // markerCell rounds to the nearest cell, but a box's own edges are
-        // floored (floorEdge) - near an edge those two can disagree by a
-        // cell, which would let a dot land on or past its own parent's
-        // border. Clamp it back inside the parent's drawn interior.
-        auto n = canvas.getNode(uuid);
-        if (n && !n->parentId.empty()) {
-            auto pit = screenRects_.find(n->parentId);
-            if (pit != screenRects_.end()) {
-                const ScreenRect& psr = pit->second;
-                int px0 = static_cast<int>(std::floor(psr.x)) + 1;
-                int py0 = static_cast<int>(std::floor(psr.y)) + 1;
-                int px1 = floorEdge(psr.x, psr.w) - 2;
-                int py1 = floorEdge(psr.y, psr.h) - 2;
-                if (px1 >= px0) x = std::min(std::max(x, px0), px1);
-                if (py1 >= py0) y = std::min(std::max(y, py0), py1);
-            }
-        }
-
-        it->second = ScreenRect{
-            static_cast<double>(x),
-            static_cast<double>(y),
-            1.0,
-            1.0
-        };
+    for (const Node* node : sorted) {
+        if (drawn.count(node->uuid)) drawNode(*node, screenRects_[node->uuid], ui, clusters.count(node->uuid) > 0);
     }
 
-    // Connections first
+    // After the boxes: a connection between two children must sit on top of
+    // their parent's (opaque) interior.
     for (const auto& [_, conn] : canvas.allConnections()) {
-        if (!boxNodes.count(conn->fromUuid) || !boxNodes.count(conn->toUuid)) continue;
-        auto fromIt = screenRects_.find(conn->fromUuid);
-        auto toIt = screenRects_.find(conn->toUuid);
-        if (fromIt != screenRects_.end() && toIt != screenRects_.end()) {
-            drawConnectionAt(conn.get(), fromIt->second, toIt->second, vw, vh,
-                              canvas.selectedConnection_ == conn->uuid);
-        }
+        if (!fullBoxes.count(conn->fromUuid) || !fullBoxes.count(conn->toUuid)) continue;
+        drawConnection(*conn, screenRects_[conn->fromUuid], screenRects_[conn->toUuid],
+                       ui.selectedConnection == conn->uuid);
     }
 
-    // Nodes
-    for (const auto* node : sorted) {
-        if (drawnNodes.count(node->uuid)) {
-            auto it = screenRects_.find(node->uuid);
-            int hoveredCorner = (canvas.cornerHover_.nodeUuid == node->uuid) ? canvas.cornerHover_.corner : 0;
-            int hoveredAnchorEdge = -1, hoveredAnchorIndex = -1;
-            if (canvas.anchorHover_.nodeUuid == node->uuid) {
-                hoveredAnchorEdge = canvas.anchorHover_.edge;
-                hoveredAnchorIndex = canvas.anchorHover_.index;
-            }
-            drawNodeAt(*node, it->second, vw, vh, clusterNodes.count(node->uuid) > 0, hoveredCorner,
-                       hoveredAnchorEdge, hoveredAnchorIndex);
-        }
+    // Names last among canvas content, parents above children, so a child
+    // box can never hide its parent's label.
+    for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
+        const Node* node = *it;
+        if (fullBoxes.count(node->uuid) || compactBoxes.count(node->uuid)) drawNodeName(*node, screenRects_[node->uuid], ui);
+    }
+    for (const auto& [_, conn] : canvas.allConnections()) {
+        if (!fullBoxes.count(conn->fromUuid) || !fullBoxes.count(conn->toUuid)) continue;
+        drawConnectionLabel(*conn, screenRects_[conn->fromUuid], screenRects_[conn->toUuid],
+                            ui.selectedConnection == conn->uuid);
     }
 
-    // Selection
-    if (canvas.selection_.active) drawSelection(canvas.selection_, vw, vh, vp);
+    if (ui.area.active) drawAreaSelection(ui.area, canvas.viewport);
+    if (ui.nodeEditor.active) drawNodeEditor(ui.nodeEditor);
+    if (ui.connEditor.active) drawConnectionEditor(ui.connEditor);
 
-    // Edit overlay
-    if (canvas.editOverlay_.active) drawEditOverlay(canvas.editOverlay_, vw, vh, vp);
-    if (canvas.connEditOverlay_.active) drawConnectionEditOverlay(canvas.connEditOverlay_, vw, vh);
+    drawSidebar(canvas, ui);
+    drawHud(canvas, ui, hud);
 
-    // HUD
-    drawHUD(vp, vw, vh);
-
-    // Sidebar
-    drawSidebar(canvas);
-
-    // FINAL pass: draw ALL names on absolute top of everything
-    // Reverse order: parents (low zoomLevel) on top of children (high zoomLevel)
-    for (auto rit = sorted.rbegin(); rit != sorted.rend(); ++rit) {
-        const auto* node = *rit;
-        if (node->name.empty()) continue;
-        if (canvas.editOverlay_.active &&
-            canvas.editOverlay_.editingName &&
-            canvas.editOverlay_.nodeUuid == node->uuid) {
-            continue;
-        }
-        auto sit = screenRects_.find(node->uuid);
-        if (sit == screenRects_.end()) continue;
-        const auto& sr = sit->second;
-        if (!boxNodes.count(node->uuid) && !compactNodes.count(node->uuid)) continue;
-        int ox = static_cast<int>(std::floor(sr.x));
-        int oy = static_cast<int>(std::floor(sr.y));
-        int w = floorEdge(sr.x, sr.w) - ox;
-        int h = floorEdge(sr.y, sr.h) - oy;
-        if (w < 2 || h < 2) continue;
-
-        // Count display characters (UTF-8 aware)
-        int displayChars = 0;
-        std::vector<int> charBytes;
-        {
-            size_t i = 0;
-            while (i < node->name.size()) {
-                unsigned char b = static_cast<unsigned char>(node->name[i]);
-                if (b < 0x80) { charBytes.push_back(static_cast<int>(i)); i += 1; }
-                else if (b < 0xE0) { charBytes.push_back(static_cast<int>(i)); i += 2; }
-                else { charBytes.push_back(static_cast<int>(i)); i += 3; }
-                displayChars++;
-            }
-        }
-        if (displayChars == 0) continue;
-
-        int innerW = w - 2;
-        int nameStartChar = (innerW - displayChars) / 2;
-        if (nameStartChar < 0) nameStartChar = 0;
-        int drawChars = std::min(innerW - nameStartChar, displayChars);
-        uint16_t finalNameAttr = node->state == NodeState::Selected ? 0x0F : 0x0E;
-        for (int i = 0; i < drawChars; i++) {
-            int bytePos = charBytes[i];
-            unsigned char b = static_cast<unsigned char>(node->name[bytePos]);
-            wchar_t ch;
-            if (b < 0x80) ch = b;
-            else if (b < 0xE0 && bytePos + 1 < static_cast<int>(node->name.size())) {
-                ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(node->name[bytePos + 1]) & 0x3F);
-            }
-            else if (b >= 0xE0 && bytePos + 2 < static_cast<int>(node->name.size())) {
-                ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(node->name[bytePos + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(node->name[bytePos + 2]) & 0x3F);
-            }
-            else ch = b;
-            putChar(ox + 1 + nameStartChar + i, oy, ch);
-            putAttr(ox + 1 + nameStartChar + i, oy, finalNameAttr);
-        }
-
-        // Redraw corners to guarantee they are never overwritten by names
-        if (w >= 2 && h >= 2) {
-            if (node->state == NodeState::Selected) {
-                int hoveredCorner = (canvas.cornerHover_.nodeUuid == node->uuid) ? canvas.cornerHover_.corner : 0;
-                uint16_t tlAttr = hoveredCorner == 1 ? 0xF0 : 0x0F;
-                uint16_t trAttr = hoveredCorner == 2 ? 0xF0 : 0x0F;
-                putChar(ox, oy, '\\');           putAttr(ox, oy, tlAttr);
-                putChar(ox + w - 1, oy, '/');     putAttr(ox + w - 1, oy, trAttr);
-            } else {
-                char hCorner = (node->state == NodeState::Hovered) ? '#' : '+';
-                uint16_t hAttr = (node->state == NodeState::Hovered) ? 0x0A : 0x09;
-                putChar(ox, oy, hCorner); putAttr(ox, oy, hAttr);
-                putChar(ox + w - 1, oy, hCorner); putAttr(ox + w - 1, oy, hAttr);
-            }
-        }
+    // Only what's actually on screen is clickable.
+    for (auto it = screenRects_.begin(); it != screenRects_.end();) {
+        const bool editing = ui.nodeEditor.active && ui.nodeEditor.nodeUuid == it->first;
+        if (!drawn.count(it->first) && !editing) it = screenRects_.erase(it);
+        else ++it;
     }
-
-    for (auto it = screenRects_.begin(); it != screenRects_.end(); ) {
-        if (!drawnNodes.count(it->first) &&
-            !(canvas.editOverlay_.active && canvas.editOverlay_.nodeUuid == it->first)) {
-            it = screenRects_.erase(it);
-        } else {
-            ++it;
-        }
-    }
-
-    flush();
 }
-
-void ConsoleRenderer::renderNode(const Node&, int, int) {}
-void ConsoleRenderer::renderConnection(const Connection&, const Node&, const Node&) {}
-void ConsoleRenderer::renderSelection(const Selection&, const Viewport&, double, double) {}
-void ConsoleRenderer::renderHUD(const Viewport& vp, double vw, double vh) {
-    drawHUD(vp, static_cast<int>(vw), static_cast<int>(vh));
-}
-void ConsoleRenderer::renderFrame(const std::vector<std::shared_ptr<Node>>&, const std::string&) {}
 
 // ====================================================================
-// Drawing primitives
+// Nodes
 // ====================================================================
-void ConsoleRenderer::fillBuffer() {
-    buffer_.resize(viewWidth_ * viewHeight_);
-    for (auto& c : buffer_) { c.ch = ' '; c.attr = 7; }
+
+void ConsoleRenderer::drawMarker(const Node& node, const ScreenRect& sr, NodeState state, bool isCluster) {
+    const int cx = static_cast<int>(sr.centerX());
+    const int cy = static_cast<int>(sr.centerY());
+
+    wchar_t glyph = node.childrenUuids.empty() ? L'▪' : L'■';
+    uint16_t attr = node.childrenUuids.empty() ? color::Gray : color::Cyan;
+    if (isCluster) {
+        glyph = L'*';
+        attr = color::BrightYellow;
+    } else if (state == NodeState::Selected) {
+        glyph = L'●';
+        attr = color::White;
+    } else if (state == NodeState::Hovered) {
+        glyph = L'○';
+        attr = color::BrightGreen;
+    }
+    buffer_.put(cx, cy, glyph, attr);
+
+    // A named marker gets its label in the free space to its right, so a
+    // collapsed box doesn't look like empty canvas. Clusters don't: one
+    // member's name would mislabel the others.
+    if (isCluster || node.name.empty()) return;
+    int x = cx + 1;
+    int written = 0;
+    utf8::forEach(node.name, [&](char32_t cp) {
+        if (written >= 24 || !canvasArea_.contains(x, cy) || buffer_.charAt(x, cy) != L' ') return;
+        buffer_.put(x++, cy, utf8::toCell(cp), color::Gray);
+        ++written;
+    });
 }
 
-void ConsoleRenderer::putChar(int x, int y, wchar_t c) {
-    if (x >= 0 && x < viewWidth_ && y >= 0 && y < viewHeight_)
-        buffer_[y * viewWidth_ + x].ch = c;
-}
-
-void ConsoleRenderer::putAttr(int x, int y, uint16_t attr) {
-    if (x >= 0 && x < viewWidth_ && y >= 0 && y < viewHeight_)
-        buffer_[y * viewWidth_ + x].attr = attr;
-}
-
-void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw, int vh,
-                                   bool isCluster, int hoveredCorner,
-                                   int hoveredAnchorEdge, int hoveredAnchorIndex) {
+void ConsoleRenderer::drawNode(const Node& node, const ScreenRect& sr, const UiState& ui, bool isCluster) {
     if (!sr.valid()) return;
-
-    int ox = static_cast<int>(std::floor(sr.x));
-    int oy = static_cast<int>(std::floor(sr.y));
-    int w = floorEdge(sr.x, sr.w) - ox;
-    int h = floorEdge(sr.y, sr.h) - oy;
-
-    // Dot mode: too small for a box. Still a real, visible marker - a dim,
-    // near-black glyph here made isolated small nodes indistinguishable from
-    // empty canvas.
-    if (w < 2 || h < 2) {
-        char dot = isCluster ? '*' :
-                   node.state == NodeState::Selected ? '#' :
-                   node.state == NodeState::Hovered ? '~' : '+';
-        uint16_t attr = node.childrenUuids.empty() ? 0x07 : 0x09;
-        if (isCluster) attr = 0x0E;
-        else if (node.state == NodeState::Selected) attr = 0x0F;
-        else if (node.state == NodeState::Hovered) attr = 0x0A;
-        int cx = static_cast<int>(sr.centerX());
-        int cy = static_cast<int>(sr.centerY());
-        putChar(cx, cy, dot);
-        putAttr(cx, cy, attr);
-
-        // Best-effort label: a single collapsed node with a name shouldn't
-        // look like an empty patch of canvas just because it has no room for
-        // a box. Print as much of the name as fits into the blank space
-        // immediately to its right. Cluster markers skip this - the name of
-        // one arbitrary member would be misleading for a merged cell.
-        if (!isCluster && !node.name.empty()) {
-            int px = cx + 1;
-            size_t i = 0;
-            int written = 0;
-            while (i < node.name.size() && written < 24 && px < vw &&
-                   canvasArea_.contains(px, cy) &&
-                   buffer_[cy * viewWidth_ + px].ch == L' ') {
-                unsigned char b = static_cast<unsigned char>(node.name[i]);
-                wchar_t ch;
-                if (b < 0x80) { ch = b; i += 1; }
-                else if (b < 0xE0 && i + 1 < node.name.size()) {
-                    ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(node.name[i + 1]) & 0x3F);
-                    i += 2;
-                } else if (i + 2 < node.name.size()) {
-                    ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(node.name[i + 1]) & 0x3F) << 6) |
-                         (static_cast<unsigned char>(node.name[i + 2]) & 0x3F);
-                    i += 3;
-                } else { ch = b; i += 1; }
-                putChar(px, cy, ch);
-                putAttr(px, cy, 0x07);
-                px++;
-                written++;
-            }
-        }
+    const NodeState state = ui.stateOf(node.uuid);
+    const CellBox b = cellBox(sr);
+    if (b.w < 2 || b.h < 2) {
+        drawMarker(node, sr, state, isCluster);
         return;
     }
 
-    if (w < 3) w = 3;
-    if (h < 2) h = 2;
-    if (ox + w > vw) w = vw - ox;
-    if (oy + h > vh) h = vh - oy;
-    if (w < 1 || h < 1) return;
-
-    char hLine = '-', vLine = '|', corner = '+';
-    uint16_t borderAttr = 7, textAttr = 7, nameAttr = 0x0E;
-
-    if (node.state == NodeState::Selected) {
-        hLine = '='; vLine = '#'; corner = '#';
-        borderAttr = 0x0F; textAttr = 0x0F; nameAttr = 0x0F;
-    } else if (node.state == NodeState::Hovered) {
-        hLine = '~'; vLine = ':'; corner = '.';
-        borderAttr = 0x0A; textAttr = 0x0A; nameAttr = 0x0E;
-    } else if (node.state == NodeState::InConnection) {
-        hLine = '*'; vLine = '*'; corner = '*';
-        borderAttr = 0x0C; textAttr = 0x0C; nameAttr = 0x0E;
+    const BoxStyle st = styleFor(state);
+    // Opaque interior: whatever lies underneath (a parent's text, a line
+    // passing behind) doesn't bleed through.
+    buffer_.fill(b.x + 1, b.y + 1, b.w - 2, b.h - 2, L' ', color::Default);
+    for (int x = b.x + 1; x < b.right(); ++x) {
+        buffer_.put(x, b.y, st.h, st.border);
+        buffer_.put(x, b.bottom(), st.h, st.border);
     }
-
-    // Bottom border
-    int by = oy + h - 1;
-    for (int x = ox; x < ox + w; x++) {
-        putChar(x, by, (x == ox || x == ox + w - 1) ? corner : hLine);
-        putAttr(x, by, borderAttr);
+    for (int y = b.y + 1; y < b.bottom(); ++y) {
+        buffer_.put(b.x, y, st.v, st.border);
+        buffer_.put(b.right(), y, st.v, st.border);
     }
-    // Side borders
-    for (int y = oy + 1; y < by; y++) {
-        putChar(ox, y, vLine);
-        putAttr(ox, y, borderAttr);
-        if (ox + w - 1 > ox) {
-            putChar(ox + w - 1, y, vLine);
-            putAttr(ox + w - 1, y, borderAttr);
+    // Corners double as resize handles on a selected box; the one under the
+    // mouse is shown in reverse video.
+    const bool handles = state == NodeState::Selected && ui.cornerHoverNode == node.uuid;
+    auto cornerAttr = [&](ResizeCorner c) { return handles && ui.cornerHover == c ? color::Inverse : st.border; };
+    buffer_.put(b.x, b.y, st.tl, cornerAttr(ResizeCorner::TopLeft));
+    buffer_.put(b.right(), b.y, st.tr, cornerAttr(ResizeCorner::TopRight));
+    buffer_.put(b.x, b.bottom(), st.bl, cornerAttr(ResizeCorner::BottomLeft));
+    buffer_.put(b.right(), b.bottom(), st.br, cornerAttr(ResizeCorner::BottomRight));
+
+    // Connection anchors: drag from one to another box to link them.
+    if (canShowAnchors(b)) {
+        for (const Anchor& a : allAnchors()) {
+            int px = 0, py = 0;
+            if (!anchorCell(b, a, px, py)) continue;
+            const bool hovered = ui.anchorHoverNode == node.uuid && ui.anchorHover == a;
+            buffer_.put(px, py, L'•', hovered ? color::Inverse : color::BrightCyan);
         }
     }
 
-    bool hasHeader = (h >= 3 && w >= 4) || !node.name.empty();
-    int textStartY = oy + 1;
-    char hCorner = corner, hLineChar = hLine;
-    uint16_t hAttr = borderAttr;
-    if (node.state == NodeState::Selected) {
-        hCorner = '#'; hLineChar = '='; hAttr = 0x0F;
-    } else if (node.state == NodeState::Hovered) {
-        hCorner = '#'; hLineChar = '='; hAttr = 0x0A;
-    } else {
-        hCorner = '+'; hLineChar = '='; hAttr = 0x09;
-    }
-
-    // --- Top border ---
-    if (hasHeader && w >= 4) {
-        putChar(ox, oy, hCorner); putAttr(ox, oy, hAttr);
-        putChar(ox + w - 1, oy, hCorner); putAttr(ox + w - 1, oy, hAttr);
-        for (int x = ox + 1; x < ox + w - 1; x++) {
-            putChar(x, oy, hLineChar);
-            putAttr(x, oy, hAttr);
+    // Body text appears only once there's room; it's the first thing to go
+    // when zooming out.
+    if (node.text.empty()) return;
+    const int innerW = b.w - 2;
+    if (b.w >= 5 && b.h >= 4) {
+        // Text rows don't scale with zoom, children do: stop above the first
+        // child so lines never run underneath a child's box.
+        int lastRow = b.bottom() - 1;
+        for (const auto& cid : node.childrenUuids) {
+            auto it = screenRects_.find(cid);
+            if (it != screenRects_.end() && it->second.valid())
+                lastRow = std::min(lastRow, static_cast<int>(std::floor(it->second.y)) - 1);
         }
-    } else {
-        putChar(ox, oy, corner); putAttr(ox, oy, borderAttr);
-        putChar(ox + w - 1, oy, corner); putAttr(ox + w - 1, oy, borderAttr);
-        for (int x = ox + 1; x < ox + w - 1; x++) {
-            putChar(x, oy, hLine);
-            putAttr(x, oy, borderAttr);
+        int y = b.y + 1;
+        for (const auto& line : splitLines(node.text)) {
+            if (y > lastRow) break;
+            buffer_.text(b.x + 1, y++, line, st.text, innerW);
         }
+    } else if (b.w >= 3 && b.h >= 3) {
+        // Hint that there is content: its first character.
+        size_t pos = 0;
+        buffer_.put(b.x + 1, b.y + 1, utf8::toCell(utf8::decode(node.text, pos)), st.text);
     }
-
-    // Resize handles: a selected box's corners get their own diagonal marks
-    // instead of the ordinary border corner, so they read as grabbable
-    // rather than just "where the border turns." Whichever one the mouse is
-    // actually over is drawn in reverse video so it's obvious which corner
-    // will move if you click now.
-    if (node.state == NodeState::Selected) {
-        int rightX = ox + w - 1;
-        int bottomY = oy + h - 1;
-        uint16_t plainAttr = 0x0F;
-        uint16_t hoverAttr = 0xF0;
-        putChar(ox, oy, '\\');          putAttr(ox, oy, hoveredCorner == 1 ? hoverAttr : plainAttr);
-        putChar(rightX, oy, '/');       putAttr(rightX, oy, hoveredCorner == 2 ? hoverAttr : plainAttr);
-        putChar(ox, bottomY, '/');      putAttr(ox, bottomY, hoveredCorner == 3 ? hoverAttr : plainAttr);
-        putChar(rightX, bottomY, '\\'); putAttr(rightX, bottomY, hoveredCorner == 4 ? hoverAttr : plainAttr);
-    }
-
-    // Connection anchor points: always shown (not just for selected nodes) -
-    // dragging from one to another node creates a connection. Whichever one
-    // is currently under the mouse lights up in reverse video, same as a
-    // resize corner, so it's clear it's a live drop target.
-    if (canShowAnchors(w, h)) {
-        for (int edge = 0; edge < 3; edge++) {
-            for (int index = 0; index < 3; index++) {
-                int px, py;
-                if (!anchorPoint(ox, oy, w, h, edge, index, px, py)) continue;
-                bool hovered = (edge == hoveredAnchorEdge && index == hoveredAnchorIndex);
-                putChar(px, py, 'o');
-                putAttr(px, py, hovered ? 0xF0 : 0x0B);
-            }
-        }
-    }
-
-    // Body text — only if node is large enough (zoom check: text disappears first when zooming out)
-    bool showText = (w >= 5 && h >= (hasHeader ? 4 : 3)) && !node.text.empty();
-    if (showText) {
-        std::istringstream iss(node.text);
-        std::string line;
-        int ty = textStartY;
-        while (std::getline(iss, line) && ty < oy + h - 1) {
-            int cx = 0;
-            for (size_t i = 0; i < line.size() && cx < w - 2;) {
-                unsigned char b = static_cast<unsigned char>(line[i]);
-                wchar_t ch;
-                if (b < 0x80) { ch = b; i++; }
-                else if (b < 0xE0) { ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(line[i+1]) & 0x3F); i += 2; }
-                else { ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(line[i+1]) & 0x3F) << 6) | (static_cast<unsigned char>(line[i+2]) & 0x3F); i += 3; }
-                putChar(ox + 1 + cx, ty, ch);
-                putAttr(ox + 1 + cx, ty, textAttr);
-                cx++;
-            }
-            ty++;
-        }
-    }
-    // Fallback: if node is too small for text but room exists, show first char of text
-    if (!showText && w >= 3 && h >= 2 && !node.text.empty()) {
-        unsigned char b = static_cast<unsigned char>(node.text[0]);
-        wchar_t fc;
-        if (b < 0x80) fc = b;
-        else if (b < 0xE0 && node.text.size() >= 2) fc = ((b & 0x1F) << 6) | (static_cast<unsigned char>(node.text[1]) & 0x3F);
-        else fc = '?';
-        putChar(ox + 1, oy + 1, fc);
-        putAttr(ox + 1, oy + 1, textAttr);
-    }
-
-
 }
 
-namespace {
-struct ExitDir { int dx, dy; };
+void ConsoleRenderer::drawNodeName(const Node& node, const ScreenRect& sr, const UiState& ui) {
+    if (node.name.empty()) return;
+    if (ui.nodeEditor.active && ui.nodeEditor.editingName && ui.nodeEditor.nodeUuid == node.uuid) return;
+
+    const CellBox b = cellBox(sr);
+    const int innerW = b.w - 2;
+    if (innerW < 1 || b.h < 2) return;
+
+    const NodeState state = ui.stateOf(node.uuid);
+    const int len = std::min(utf8::length(node.name), innerW);
+    const int start = b.x + 1 + (innerW - len) / 2;
+    buffer_.text(start, b.y, node.name, styleFor(state).name, len);
 }
 
-// Which way a line leaves a given anchor edge (0=Left,1=Right,2=Bottom), or
-// for a center-fallback endpoint (edge<0) a direction picked from where the
-// other end sits - there's no Top anchor (that row is the name label), so
-// the vertical case always exits downward.
-static ExitDir exitDirFor(int edge, double fromX, double fromY, double towardX, double towardY) {
-    if (edge == 0) return {-1, 0};
-    if (edge == 1) return {1, 0};
-    if (edge == 2) return {0, 1};
-    double ddx = towardX - fromX, ddy = towardY - fromY;
-    if (std::abs(ddx) > std::abs(ddy)) return {ddx >= 0 ? 1 : -1, 0};
-    return {0, 1};
-}
+// ====================================================================
+// Connections
+// ====================================================================
 
-// Orthogonal (Manhattan) path between two points that leave in fixed
-// directions: a short stub out of each anchor, then one or two bends to
-// join them. This is a routing heuristic, not full obstacle avoidance - it
-// won't detour around a node that happens to sit between the two stubs.
-static std::vector<std::pair<int, int>> routeOrthogonal(int x1, int y1, ExitDir d1,
-                                                          int x2, int y2, ExitDir d2) {
-    const int stub = 2;
-    std::vector<std::pair<int, int>> pts;
-    pts.push_back({x1, y1});
-    int ax = x1 + d1.dx * stub, ay = y1 + d1.dy * stub;
-    pts.push_back({ax, ay});
-    int bx = x2 + d2.dx * stub, by = y2 + d2.dy * stub;
-
-    bool aHoriz = d1.dx != 0;
-    bool bHoriz = d2.dx != 0;
-    if (aHoriz && bHoriz) {
-        int midX = (ax + bx) / 2;
-        pts.push_back({midX, ay});
-        pts.push_back({midX, by});
-    } else if (aHoriz && !bHoriz) {
-        pts.push_back({bx, ay});
-    } else if (!aHoriz && bHoriz) {
-        pts.push_back({ax, by});
-    } else {
-        int midY = (ay + by) / 2;
-        pts.push_back({ax, midY});
-        pts.push_back({bx, midY});
-    }
-    pts.push_back({bx, by});
-    pts.push_back({x2, y2});
-    return pts;
-}
-
-void ConsoleRenderer::drawConnectionAt(const Connection* conn, const ScreenRect& from,
-                                        const ScreenRect& to, int vw, int vh, bool selected) {
+void ConsoleRenderer::drawConnection(const Connection& conn, const ScreenRect& from, const ScreenRect& to,
+                                     bool selected) {
     if (!from.valid() || !to.valid()) return;
 
-    // If the connection was dragged from/to a specific anchor point, draw
-    // it starting/ending exactly there instead of the node's center - a
-    // fraction of the box, so it still lands on the right edge point after
-    // the node moves, resizes, or the view zooms.
-    auto endpointOf = [](const ScreenRect& sr, int edge, int index, int fallbackX, int fallbackY) {
-        if (edge < 0 || index < 0) return std::pair<int, int>{fallbackX, fallbackY};
-        int ox = static_cast<int>(std::floor(sr.x));
-        int oy = static_cast<int>(std::floor(sr.y));
-        int w = floorEdge(sr.x, sr.w) - ox;
-        int h = floorEdge(sr.y, sr.h) - oy;
-        if (!canShowAnchors(w, h)) return std::pair<int, int>{fallbackX, fallbackY};
-        int px, py;
-        if (anchorPoint(ox, oy, w, h, edge, index, px, py)) return std::pair<int, int>{px, py};
-        return std::pair<int, int>{fallbackX, fallbackY};
+    wchar_t hCh = L'─', vCh = L'│';
+    uint16_t attr = isArrow(conn.type) ? color::BrightBlue : color::DarkGray;
+    if (conn.type == ConnType::DottedLine || conn.type == ConnType::DottedArrow) {
+        hCh = vCh = L'·';
+        attr = color::Magenta;
+    } else if (conn.type == ConnType::DashedLine || conn.type == ConnType::DashedArrow) {
+        hCh = L'-';
+        vCh = L'¦';
+        attr = color::Yellow;
+    }
+    if (selected) attr = color::White;
+    const bool solid = hCh == L'─';
+
+    const CellPath pts = routeConnection(from, to, conn);
+    // The two end cells lie on the boxes' borders (often an anchor): leave
+    // those to the boxes.
+    auto put = [&](int x, int y, wchar_t ch) {
+        if ((x == pts.front().first && y == pts.front().second) || (x == pts.back().first && y == pts.back().second))
+            return;
+        buffer_.put(x, y, ch, attr);
     };
-
-    auto [x1, y1] = endpointOf(from, conn->fromAnchorEdge, conn->fromAnchorIndex,
-                                static_cast<int>(from.centerX()), static_cast<int>(from.centerY()));
-    auto [x2, y2] = endpointOf(to, conn->toAnchorEdge, conn->toAnchorIndex,
-                                static_cast<int>(to.centerX()), static_cast<int>(to.centerY()));
-
-    char hCh = '-', vCh = '|';
-    uint16_t connAttr = 0x08;
-    if (conn->type == ConnType::DottedLine || conn->type == ConnType::DottedArrow) {
-        hCh = '.'; vCh = ':'; connAttr = 0x05;
-    }
-    if (conn->type == ConnType::DashedLine || conn->type == ConnType::DashedArrow) {
-        hCh = '-'; vCh = '|'; connAttr = 0x06;
-    }
-    bool isArrow = conn->type == ConnType::Arrow || conn->type == ConnType::DottedArrow ||
-                   conn->type == ConnType::DashedArrow;
-    if (isArrow) connAttr = 0x09;
-    if (selected) connAttr = 0x0F;
-
-    ExitDir d1 = exitDirFor(conn->fromAnchorEdge, x1, y1, x2, y2);
-    ExitDir d2 = exitDirFor(conn->toAnchorEdge, x2, y2, x1, y1);
-    auto pts = routeOrthogonal(x1, y1, d1, x2, y2, d2);
-
-    for (size_t i = 0; i + 1 < pts.size(); i++) {
-        auto [sx, sy] = pts[i];
-        auto [ex, ey] = pts[i + 1];
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        const auto [sx, sy] = pts[i];
+        const auto [ex, ey] = pts[i + 1];
         if (sx == ex) {
-            int y0 = std::min(sy, ey), y1b = std::max(sy, ey);
-            for (int y = y0; y <= y1b; y++) { putChar(sx, y, vCh); putAttr(sx, y, connAttr); }
+            for (int y = std::min(sy, ey); y <= std::max(sy, ey); ++y) put(sx, y, vCh);
         } else if (sy == ey) {
-            int x0 = std::min(sx, ex), x1b = std::max(sx, ex);
-            for (int x = x0; x <= x1b; x++) { putChar(x, sy, hCh); putAttr(x, sy, connAttr); }
+            for (int x = std::min(sx, ex); x <= std::max(sx, ex); ++x) put(x, sy, hCh);
         }
     }
-    // Mark the bends so the route reads as deliberate right angles rather
-    // than a gap in the line.
-    for (size_t i = 1; i + 1 < pts.size(); i++) {
-        putChar(pts[i].first, pts[i].second, '+');
-        putAttr(pts[i].first, pts[i].second, connAttr);
-    }
 
-    if (isArrow) {
-        // Points into the target in the direction the final stub actually
-        // approaches from, not a fixed '>' - the route can arrive from
-        // any side depending on which anchors were used.
-        char arrowCh = d2.dx > 0 ? '<' : d2.dx < 0 ? '>' : '^';
-        putChar(x2, y2, arrowCh);
-        putAttr(x2, y2, connAttr);
-    }
-
-    if (!conn->name.empty()) {
-        auto [lx, ly] = pts[pts.size() / 2];
-        int px = lx + 1;
-        size_t i = 0;
-        while (i < conn->name.size() && px < vw && ly >= 0 && ly < vh) {
-            unsigned char b = static_cast<unsigned char>(conn->name[i]);
-            wchar_t ch;
-            if (b < 0x80) { ch = b; i += 1; }
-            else if (b < 0xE0 && i + 1 < conn->name.size()) {
-                ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(conn->name[i + 1]) & 0x3F);
-                i += 2;
-            } else if (i + 2 < conn->name.size()) {
-                ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(conn->name[i + 1]) & 0x3F) << 6) |
-                     (static_cast<unsigned char>(conn->name[i + 2]) & 0x3F);
-                i += 3;
-            } else { ch = b; i += 1; }
-            putChar(px, ly, ch);
-            putAttr(px, ly, selected ? 0x0F : 0x0E);
-            px++;
+    // Proper corner glyphs where the route bends.
+    if (solid) {
+        for (size_t i = 1; i + 1 < pts.size(); ++i) {
+            const auto [px, py] = pts[i - 1];
+            const auto [cx, cy] = pts[i];
+            const auto [nx, ny] = pts[i + 1];
+            const bool up = py < cy || ny < cy, down = py > cy || ny > cy;
+            const bool left = px < cx || nx < cx, right = px > cx || nx > cx;
+            if (up || down || left || right) put(cx, cy, junction(up, down, left, right));
         }
+    }
+
+    if (isArrow(conn.type) && pts.size() >= 2) {
+        // The route ends on the target's border, which is drawn over it, so
+        // the head goes one cell outside, pointing in.
+        const auto [ex, ey] = pts.back();
+        const auto [sx, sy] = pts[pts.size() - 2];
+        const int ox = sign(sx - ex), oy = sign(sy - ey);
+        const wchar_t head = ox > 0 ? L'◄' : ox < 0 ? L'►' : oy > 0 ? L'▲' : L'▼';
+        buffer_.put(ex + ox, ey + oy, head, attr);
     }
 }
 
-void ConsoleRenderer::drawSelection(const Selection& sel, int vw, int vh, const Viewport& vp) {
-    double cx = canvasArea_.centerX();
-    double cy = canvasArea_.centerY();
-    int x1 = static_cast<int>((sel.left() - vp.centerX) * vp.textScale + cx);
-    int y1 = static_cast<int>((sel.top() - vp.centerY) * vp.textScale + cy);
-    int x2 = static_cast<int>((sel.right() - vp.centerX) * vp.textScale + cx);
-    int y2 = static_cast<int>((sel.bottom() - vp.centerY) * vp.textScale + cy);
+void ConsoleRenderer::drawConnectionLabel(const Connection& conn, const ScreenRect& from, const ScreenRect& to,
+                                          bool selected) {
+    if (conn.name.empty() || !from.valid() || !to.valid()) return;
+    // Middle of the longest segment: the most room for the text.
+    const CellPath pts = routeConnection(from, to, conn);
+    size_t best = 0;
+    int bestLen = -1;
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        const int len = std::abs(pts[i + 1].first - pts[i].first) + std::abs(pts[i + 1].second - pts[i].second);
+        if (len > bestLen) {
+            bestLen = len;
+            best = i;
+        }
+    }
+    const int mx = (pts[best].first + pts[best + 1].first) / 2;
+    const int my = (pts[best].second + pts[best + 1].second) / 2;
+    const bool horizontal = pts[best].second == pts[best + 1].second;
+    const int len = utf8::length(conn.name);
+    const int x = horizontal ? mx - len / 2 : mx + 1;
+    const int y = horizontal ? my - 1 : my;  // above a horizontal line, beside a vertical one
 
-    uint16_t selAttr = 0x0F;
-    for (int x = std::min(x1, x2); x <= std::max(x1, x2); x++) {
-        putChar(x, y1, (x == x1 || x == x2) ? '#' : '-');
-        putAttr(x, y1, selAttr);
-        putChar(x, y2, (x == x1 || x == x2) ? '#' : '-');
-        putAttr(x, y2, selAttr);
+    // Only where it fits on empty canvas; otherwise it appears once you
+    // zoom in far enough to make room.
+    for (int i = 0; i < len; ++i) {
+        if (!canvasArea_.contains(x + i, y) || buffer_.charAt(x + i, y) != L' ') return;
     }
-    for (int y = std::min(y1, y2); y <= std::max(y1, y2); y++) {
-        putChar(x1, y, (y == y1 || y == y2) ? '#' : '|');
-        putAttr(x1, y, selAttr);
-        putChar(x2, y, (y == y1 || y == y2) ? '#' : '|');
-        putAttr(x2, y, selAttr);
-    }
+    buffer_.text(x, y, conn.name, selected ? color::White : color::BrightYellow);
 }
 
-void ConsoleRenderer::drawEditOverlay(const EditOverlay& overlay, int vw, int vh, const Viewport&) {
-    auto it = screenRects_.find(overlay.nodeUuid);
-    if (it == screenRects_.end()) return;
+// ====================================================================
+// Overlays
+// ====================================================================
 
-    const ScreenRect& sr = it->second;
-    if (!sr.valid()) return;
+void ConsoleRenderer::drawAreaSelection(const AreaSelection& sel, const Viewport& vp) {
+    const double cx = canvasArea_.centerX(), cy = canvasArea_.centerY();
+    const int x1 = static_cast<int>((sel.left() - vp.centerX) * vp.scale + cx);
+    const int y1 = static_cast<int>((sel.top() - vp.centerY) * vp.scale + cy);
+    const int x2 = static_cast<int>((sel.right() - vp.centerX) * vp.scale + cx);
+    const int y2 = static_cast<int>((sel.bottom() - vp.centerY) * vp.scale + cy);
 
-    int ox = static_cast<int>(sr.x);
-    int oy = static_cast<int>(sr.y);
-    int w = static_cast<int>(sr.w);
-    int h = static_cast<int>(sr.h);
-    if (overlay.nodeRect.width > 0) {
-        w = std::max(w, static_cast<int>(std::round(overlay.nodeRect.width)));
+    const uint16_t attr = color::White;
+    for (int x = x1 + 1; x < x2; ++x) {
+        buffer_.put(x, y1, L'─', attr);
+        buffer_.put(x, y2, L'─', attr);
     }
-    if (overlay.nodeRect.height > 0) {
-        h = std::max(h, static_cast<int>(std::round(overlay.nodeRect.height)));
+    for (int y = y1 + 1; y < y2; ++y) {
+        buffer_.put(x1, y, L'│', attr);
+        buffer_.put(x2, y, L'│', attr);
     }
-    if (w < 3) w = 3;
-    if (h < 2) h = 2;
-    screenRects_[overlay.nodeUuid] = ScreenRect{
-        static_cast<double>(ox),
-        static_cast<double>(oy),
-        static_cast<double>(w),
-        static_cast<double>(h)
-    };
+    buffer_.put(x1, y1, L'┌', attr);
+    buffer_.put(x2, y1, L'┐', attr);
+    buffer_.put(x1, y2, L'└', attr);
+    buffer_.put(x2, y2, L'┘', attr);
+}
 
-    uint16_t editAttr = 0x0F;
+void ConsoleRenderer::drawNodeEditor(const NodeEditor& editor) {
+    auto it = screenRects_.find(editor.nodeUuid);
+    if (it == screenRects_.end() || !it->second.valid()) return;
+    const CellBox b = cellBox(it->second);
+    const uint16_t attr = color::make(color::White, color::Blue);
 
-    if (overlay.editingName) {
-        for (int y = oy; y < oy + h; y++) {
-            for (int x = ox; x < ox + w; x++) {
-                if (x >= 0 && x < vw && y >= 0 && y < vh) {
-                    putChar(x, y, ' ');
-                    putAttr(x, y, editAttr);
-                }
-            }
-        }
-
-        for (int x = ox; x < ox + w; x++) {
-            if (x >= 0 && x < vw) {
-                if (oy >= 0 && oy < vh) {
-                    putChar(x, oy, x == ox || x == ox + w - 1 ? '+' : '=');
-                    putAttr(x, oy, editAttr);
-                }
-                int by = oy + h - 1;
-                if (by >= 0 && by < vh && by != oy) {
-                    putChar(x, by, x == ox || x == ox + w - 1 ? '+' : '~');
-                    putAttr(x, by, editAttr);
-                }
-            }
-        }
-        for (int y = oy + 1; y < oy + h - 1; y++) {
-            if (y >= 0 && y < vh) {
-                if (ox >= 0 && ox < vw) {
-                    putChar(ox, y, ':');
-                    putAttr(ox, y, editAttr);
-                }
-                int rx = ox + w - 1;
-                if (rx >= 0 && rx < vw && rx != ox) {
-                    putChar(rx, y, ':');
-                    putAttr(rx, y, editAttr);
-                }
-            }
-        }
-
-        int displayChars = 0;
-        std::vector<int> charBytes;
-        for (size_t i = 0; i < overlay.text.size();) {
-            unsigned char b = static_cast<unsigned char>(overlay.text[i]);
-            charBytes.push_back(static_cast<int>(i));
-            if (b < 0x80) i += 1;
-            else if (b < 0xE0) i += 2;
-            else i += 3;
-            displayChars++;
-        }
-
-        int innerW = std::max(1, w - 2);
-        int nameStartChar = (innerW - displayChars) / 2;
-        if (nameStartChar < 0) nameStartChar = 0;
-        int drawChars = std::min(innerW - nameStartChar, displayChars);
-
-        for (int cx = 0; cx < drawChars; cx++) {
-            int bytePos = charBytes[cx];
-            unsigned char b = static_cast<unsigned char>(overlay.text[bytePos]);
-            wchar_t ch;
-            if (b < 0x80) ch = b;
-            else if (b < 0xE0 && bytePos + 1 < static_cast<int>(overlay.text.size())) {
-                ch = ((b & 0x1F) << 6) |
-                     (static_cast<unsigned char>(overlay.text[bytePos + 1]) & 0x3F);
-            } else if (bytePos + 2 < static_cast<int>(overlay.text.size())) {
-                ch = ((b & 0x0F) << 12) |
-                     ((static_cast<unsigned char>(overlay.text[bytePos + 1]) & 0x3F) << 6) |
-                     (static_cast<unsigned char>(overlay.text[bytePos + 2]) & 0x3F);
-            } else {
-                ch = '?';
-            }
-
-            int px = ox + 1 + nameStartChar + cx;
-            if (px >= 0 && px < vw && oy >= 0 && oy < vh) {
-                putChar(px, oy, ch);
-                putAttr(px, oy, editAttr);
-            }
-        }
-
-        int cursorPx = ox + 1 + nameStartChar + overlay.cursorCol;
-        cursorPx = std::max(ox + 1, std::min(ox + w - 2, cursorPx));
-        if (cursorPx >= 0 && cursorPx < vw && oy >= 0 && oy < vh) {
-            if (buffer_[oy * viewWidth_ + cursorPx].ch != '=' &&
-                buffer_[oy * viewWidth_ + cursorPx].ch != ' ') {
-                buffer_[oy * viewWidth_ + cursorPx].attr = 0xF0;
-            } else {
-                putChar(cursorPx, oy, '_');
-                putAttr(cursorPx, oy, 0xF0);
-            }
-        }
+    if (editor.editingName) {
+        // One-line field over the header row.
+        const int len = utf8::length(editor.text);
+        const int w = std::max(b.w, len + 4);
+        buffer_.fill(b.x, b.y, w, 1, L' ', attr);
+        buffer_.put(b.x, b.y, L'[', attr);
+        buffer_.put(b.x + w - 1, b.y, L']', attr);
+        buffer_.text(b.x + 2, b.y, editor.text, attr, w - 3);
+        const int cursorX = std::min(b.x + 2 + editor.cursorCol, b.x + w - 2);
+        buffer_.setAttr(cursorX, b.y, color::Inverse);
+        if (buffer_.charAt(cursorX, b.y) == L' ') buffer_.put(cursorX, b.y, L'_', color::Inverse);
+        it->second.w = std::max(it->second.w, static_cast<double>(w));
         return;
     }
 
-    // ---- Render text FIRST, track cursor position ----
-    std::istringstream iss(overlay.text);
-    std::string line;
-    int lineRow = 0;
-    int ty = oy + 1;
-    int cursorPx = -1, cursorPy = -1;
+    // Multi-line editor: grows past the box when the text needs more room.
+    const auto lines = splitLines(editor.text);
+    int maxLen = 0;
+    for (const auto& l : lines) maxLen = std::max(maxLen, utf8::length(l));
+    const int w = std::max(b.w, maxLen + 3);
+    const int h = std::max(b.h, static_cast<int>(lines.size()) + 2);
 
-    while (std::getline(iss, line)) {
-        int cx = 0;
-        for (size_t i = 0; i < line.size() && cx < w - 2;) {
-            unsigned char b = static_cast<unsigned char>(line[i]);
-            wchar_t ch;
-            if (b < 0x80) { ch = b; i++; }
-            else if (b < 0xE0) { ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(line[i+1]) & 0x3F); i += 2; }
-            else { ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(line[i+1]) & 0x3F) << 6) | (static_cast<unsigned char>(line[i+2]) & 0x3F); i += 3; }
-            int px = ox + 1 + cx;
-            if (px >= 0 && px < vw && ty >= 0 && ty < vh) {
-                putChar(px, ty, ch); putAttr(px, ty, editAttr);
-            }
-            cx++;
-        }
-        // Track cursor: even if this row is outside the visible box area
-        if (lineRow == overlay.cursorRow) {
-            cursorPx = ox + 1 + overlay.cursorCol;
-            cursorPy = ty;
-        }
-        ty++;
-        lineRow++;
+    buffer_.fill(b.x, b.y, w, h, L' ', attr);
+    for (int x = b.x + 1; x < b.x + w - 1; ++x) {
+        buffer_.put(x, b.y, L'═', attr);
+        buffer_.put(x, b.y + h - 1, L'═', attr);
     }
-
-    // If cursor row is past all text lines, place it on the next available row
-    if (cursorPx < 0) {
-        cursorPx = ox + 1 + overlay.cursorCol;
-        cursorPy = oy + 1 + overlay.cursorRow;
+    for (int y = b.y + 1; y < b.y + h - 1; ++y) {
+        buffer_.put(b.x, y, L'║', attr);
+        buffer_.put(b.x + w - 1, y, L'║', attr);
     }
+    buffer_.put(b.x, b.y, L'╔', attr);
+    buffer_.put(b.x + w - 1, b.y, L'╗', attr);
+    buffer_.put(b.x, b.y + h - 1, L'╚', attr);
+    buffer_.put(b.x + w - 1, b.y + h - 1, L'╝', attr);
 
-    // ---- NOW draw the border, expanding to include cursor if needed ----
-    int drawH = h;
-    if (cursorPy >= 0 && cursorPy >= oy + drawH) {
-        drawH = cursorPy - oy + 2;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        buffer_.text(b.x + 1, b.y + 1 + static_cast<int>(i), lines[i], attr, w - 2);
     }
+    const int cx = b.x + 1 + editor.cursorCol;
+    const int cy = b.y + 1 + editor.cursorRow;
+    if (buffer_.charAt(cx, cy) == L' ') buffer_.put(cx, cy, L'_', color::Inverse);
+    else buffer_.setAttr(cx, cy, color::Inverse);
 
-    // Clamp to viewport
-    if (ox + w > vw) w = vw - ox;
-    if (oy + drawH > vh) drawH = vh - oy;
-    if (w < 1 || drawH < 1) return;
-
-    // Border
-    for (int x = ox; x < ox + w; x++) {
-        if (oy >= 0 && oy < vh) { putChar(x, oy, '+'); putAttr(x, oy, editAttr); }
-        int by = oy + drawH - 1;
-        if (by >= 0 && by < vh && by != oy) { putChar(x, by, '+'); putAttr(x, by, editAttr); }
-    }
-    for (int y = oy; y < oy + drawH; y++) {
-        if (y >= 0 && y < vh) {
-            putChar(ox, y, '#'); putAttr(ox, y, editAttr);
-            if (ox + w - 1 != ox) { putChar(ox + w - 1, y, '#'); putAttr(ox + w - 1, y, editAttr); }
-        }
-    }
-
-    // ---- Draw cursor (ALWAYS visible) ----
-    if (cursorPx >= 0 && cursorPy >= 0) {
-        int px = cursorPx;
-        int py = cursorPy;
-        // Clamp to viewport
-        px = std::max(0, std::min(px, vw - 1));
-        py = std::max(0, std::min(py, vh - 1));
-
-        // Check if there's a character at this position
-        bool hasChar = false;
-        for (int y = oy; y < oy + drawH; y++) {
-            for (int x = ox; x < ox + w; x++) {
-                if (x == px && y == py) {
-                    hasChar = (buffer_[y * viewWidth_ + x].ch != ' ');
-                    break;
-                }
-            }
-            if (hasChar) break;
-        }
-
-        if (hasChar) {
-            buffer_[py * viewWidth_ + px].attr = 0xF0; // reverse video
-        } else {
-            putChar(px, py, '_'); putAttr(px, py, 0xF0); // blinking underscore
-        }
-    }
+    it->second.w = std::max(it->second.w, static_cast<double>(w));
+    it->second.h = std::max(it->second.h, static_cast<double>(h));
 }
 
-void ConsoleRenderer::drawConnectionEditOverlay(const ConnectionEditOverlay& overlay, int vw, int vh) {
-    if (!overlay.active) return;
+void ConsoleRenderer::drawConnectionEditor(const ConnectionEditor& editor) {
+    const int len = utf8::length(editor.text);
+    const int w = std::max(10, len + 4);
+    const int x = editor.screenX - w / 2;
+    const int y = editor.screenY;
+    const uint16_t attr = color::make(color::White, color::Blue);
 
-    int displayChars = 0;
-    std::vector<int> charBytes;
-    {
-        size_t i = 0;
-        while (i < overlay.text.size()) {
-            unsigned char b = static_cast<unsigned char>(overlay.text[i]);
-            charBytes.push_back(static_cast<int>(i));
-            if (b < 0x80) i += 1; else if (b < 0xE0) i += 2; else i += 3;
-            displayChars++;
-        }
-    }
-
-    int w = std::max(10, displayChars + 4);
-    int ox = overlay.screenX - w / 2;
-    int oy = overlay.screenY;
-    if (oy < 0 || oy >= vh) return;
-    uint16_t attr = 0x0F;
-
-    for (int x = ox; x < ox + w; x++) { putChar(x, oy, ' '); putAttr(x, oy, attr); }
-    putChar(ox, oy, '['); putAttr(ox, oy, attr);
-    putChar(ox + w - 1, oy, ']'); putAttr(ox + w - 1, oy, attr);
-
-    int textStart = ox + 2;
-    for (int i = 0; i < displayChars; i++) {
-        int bytePos = charBytes[i];
-        unsigned char b = static_cast<unsigned char>(overlay.text[bytePos]);
-        wchar_t ch;
-        if (b < 0x80) ch = b;
-        else if (b < 0xE0 && bytePos + 1 < static_cast<int>(overlay.text.size())) {
-            ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(overlay.text[bytePos + 1]) & 0x3F);
-        } else if (bytePos + 2 < static_cast<int>(overlay.text.size())) {
-            ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(overlay.text[bytePos + 1]) & 0x3F) << 6) |
-                 (static_cast<unsigned char>(overlay.text[bytePos + 2]) & 0x3F);
-        } else { ch = '?'; }
-        int px = textStart + i;
-        if (px >= 0 && px < vw) { putChar(px, oy, ch); putAttr(px, oy, attr); }
-    }
-
-    int cursorPx = textStart + overlay.cursorCol;
-    cursorPx = std::max(textStart, std::min(ox + w - 2, cursorPx));
-    if (cursorPx >= 0 && cursorPx < vw) putAttr(cursorPx, oy, 0xF0);
+    buffer_.fill(x, y, w, 1, L' ', attr);
+    buffer_.put(x, y, L'[', attr);
+    buffer_.put(x + w - 1, y, L']', attr);
+    buffer_.text(x + 2, y, editor.text, attr, w - 3);
+    const int cursorX = std::clamp(x + 2 + editor.cursorCol, x + 2, x + w - 2);
+    if (buffer_.charAt(cursorX, y) == L' ') buffer_.put(cursorX, y, L'_', color::Inverse);
+    else buffer_.setAttr(cursorX, y, color::Inverse);
 }
 
-void ConsoleRenderer::drawHUD(const Viewport& vp, int vw, int vh) {
-    uint16_t topAttr = 0x0E, botAttr = 0x08;
+// ====================================================================
+// Chrome: status rows and sidebar
+// ====================================================================
+
+void ConsoleRenderer::drawHud(const Canvas& canvas, const UiState& ui, const HudInfo& hud) {
+    const int w = buffer_.width();
+    const int bottom = buffer_.height() - 1;
+    if (w <= 0 || bottom < 1) return;
+
+    // Top bar: what you're looking at.
+    const uint16_t barAttr = color::make(color::White, color::Blue);
+    buffer_.fill(0, 0, w, 1, L' ', barAttr);
 
     std::ostringstream zoom;
     zoom.setf(std::ios::fixed);
-    if (vp.textScale >= 0.1) {
-        zoom.precision(0);
-        zoom << vp.textScale * 100.0;
+    const double pct = canvas.viewport.scale * 100.0;
+    zoom.precision(pct >= 10.0 ? 0 : pct >= 0.1 ? 2 : 4);
+    zoom << pct;
+
+    std::string left = " Infinite Canvas  │  " + (hud.projectName.empty() ? std::string("Untitled") : hud.projectName);
+    if (hud.unsaved) left += " (not saved yet)";
+    left += "  │  zoom " + zoom.str() + "%  │  " + std::to_string(canvas.allNodes().size()) + " boxes";
+    buffer_.text(0, 0, left, barAttr, w);
+
+    if (!hud.status.empty()) {
+        const std::string status = " " + hud.status + " ";
+        const int len = utf8::length(status);
+        const uint16_t attr = hud.statusIsError ? color::make(color::White, color::Red)
+                                                : color::make(color::Black, color::Green);
+        if (len < w) buffer_.text(w - len, 0, status, attr);
+    }
+
+    // Bottom bar: the keys that matter right now.
+    std::string help;
+    if (ui.nodeEditor.active && !ui.nodeEditor.editingName) {
+        help = " Enter: new line   Ctrl+Enter or click outside: save   Esc: cancel";
+    } else if (ui.nodeEditor.active || ui.connEditor.active) {
+        help = " Enter: save   Esc: cancel";
+    } else if (!ui.connectionSource.empty()) {
+        help = " Release over another box to connect   Esc: cancel";
     } else {
-        zoom.precision(4);
-        zoom << vp.textScale * 100.0;
+        help = " N new   Dbl-click edit   R rename   Drag move   Corner resize   Drag • connect   "
+               "Tab/Shift+Tab un/nest   F frame   X delete   Wheel zoom   WASD pan   0 fit   "
+               "Shift+drag select   Right-click menu   Ctrl+S save   Ctrl+Q quit";
     }
-
-    std::string top = "Lv:" + std::to_string(vp.zoomLevel) +
-                       " Z:" + zoom.str() + "%" +
-                       " C:(" + std::to_string(static_cast<int>(vp.centerX)) + "," +
-                       std::to_string(static_cast<int>(vp.centerY)) + ")";
-    for (int x = 0; x < static_cast<int>(top.size()) && x < vw; x++) {
-        putChar(x, 0, top[x]);
-        putAttr(x, 0, topAttr);
-    }
-
-    std::string bot = " DblClick:Select+Edit Click+Drag:Move Click:Clear Pan:DragEmpty Scroll:Zoom [ ]:Level +/-:Text "
-                         "N:NewNode Sel+N:Child F:Frame X:Del Tab:Promote Esc:Clear RClick:Menu "
-                         "Ctrl+S:Save Ctrl+N:New Ctrl+Q:Quit " +
-                        std::string(IC_VERSION_STRING);
-    for (int x = 0; x < static_cast<int>(bot.size()) && x < vw; x++) {
-        putChar(x, vh - 1, bot[x]);
-        putAttr(x, vh - 1, botAttr);
-    }
+    buffer_.fill(0, bottom, w, 1, L' ', color::make(color::Gray, color::Black));
+    buffer_.text(0, bottom, help, color::DarkGray, w);
 }
 
-void ConsoleRenderer::drawSidebar(const Canvas& canvas) {
-    int vw = viewWidth_;
-    int vh = viewHeight_;
-    int sideW = 26;
+void ConsoleRenderer::drawSidebar(const Canvas& canvas, const UiState& ui) {
+    const int sideW = canvasArea_.left;
+    const int h = buffer_.height();
+    if (sideW <= 0) return;
 
-    if (vw < sideW + 10) return;
+    buffer_.fill(0, 1, sideW, h - 2, L' ', color::Default);
+    for (int y = 1; y < h - 1; ++y) buffer_.put(sideW - 1, y, L'│', color::DarkGray);
 
-    // Fill sidebar background
-    for (int y = 1; y < vh - 1; y++) {
-        for (int x = 0; x < sideW; x++) {
-            putChar(x, y, L' ');
-            putAttr(x, y, 0x01);
-        }
-    }
-
-    // Borders
-    for (int y = 1; y < vh - 1; y++) {
-        putChar(0, y, L'\u2502');
-        putAttr(0, y, 0x0B);
-        putChar(sideW - 1, y, L'\u2502');
-        putAttr(sideW - 1, y, 0x0B);
-    }
-
-    // Header
-    std::string header = "  PROJECT ";
-    for (size_t i = 0; i < header.size() && 1 + static_cast<int>(i) < sideW - 1; i++) {
-        putChar(1 + static_cast<int>(i), 1, static_cast<wchar_t>(header[i]));
-        putAttr(1 + static_cast<int>(i), 1, 0x0B);
-    }
-
-    // Check if there are any nodes
+    buffer_.text(1, 1, "OUTLINE", color::BrightCyan);
     if (canvas.allNodes().empty()) {
-        std::string noProj = "No project";
-        for (size_t i = 0; i < noProj.size() && 1 + static_cast<int>(i) < sideW - 1; i++) {
-            putChar(1 + static_cast<int>(i), 2, static_cast<wchar_t>(noProj[i]));
-            putAttr(1 + static_cast<int>(i), 2, 0x08);
-        }
+        buffer_.text(1, 3, "Empty canvas.", color::DarkGray);
+        buffer_.text(1, 4, "Press N to add a box.", color::DarkGray);
         return;
     }
-
-    int row = 2;
-    // Draw root nodes first
-    drawSidebarNodeTree(canvas, "", 0, row);
+    int row = 3;
+    drawSidebarTree(canvas, ui, "", 0, row);
 }
 
-void ConsoleRenderer::drawSidebarNodeTree(const Canvas& canvas, const std::string& parentUuid, int indent, int& row) {
-    int vh = viewHeight_;
-    int sideW = 26;
+void ConsoleRenderer::drawSidebarTree(const Canvas& canvas, const UiState& ui, const std::string& parentUuid,
+                                      int indent, int& row) {
+    const int sideW = canvasArea_.left;
+    const int maxRow = buffer_.height() - 2;
 
-    // Collect children of parentUuid
-    std::vector<std::shared_ptr<Node>> children;
-    for (const auto& [uuid, node] : canvas.allNodes()) {
-        if (node->parentId == parentUuid) {
-            children.push_back(node);
+    for (const auto& node : canvas.getChildren(parentUuid)) {
+        if (row > maxRow) return;
+
+        std::string label = node->name;
+        if (label.empty()) label = firstLine(node->text);
+        if (label.empty()) label = "(untitled)";
+
+        const int x = 1 + std::min(indent, 6) * 2;
+        const int avail = sideW - 1 - x - 2;  // keep clear of the border
+        if (avail >= 3) {
+            if (utf8::length(label) > avail) label = utf8::prefix(label, avail - 1) + "…";
+            const bool selected = ui.isSelected(node->uuid);
+            const wchar_t bullet = selected ? L'►' : node->childrenUuids.empty() ? L'·' : L'▪';
+            const uint16_t attr = selected ? color::BrightYellow : color::Gray;
+            buffer_.put(x, row, bullet, selected ? color::BrightYellow : color::Cyan);
+            const int n = buffer_.text(x + 2, row, label, attr, avail);
+            sidebarRects_[node->uuid] = ScreenRect{static_cast<double>(x), static_cast<double>(row),
+                                                   static_cast<double>(n + 2), 1.0};
         }
-    }
-
-    // Sort children by position
-    std::sort(children.begin(), children.end(), [](const std::shared_ptr<Node>& a, const std::shared_ptr<Node>& b) {
-        if (a->rect.y != b->rect.y) return a->rect.y < b->rect.y;
-        return a->rect.x < b->rect.x;
-    });
-
-    for (const auto& node : children) {
-        if (row >= vh - 2) return;
-
-        int labelStart = 1 + indent * 2;
-        int availWidth = sideW - 2 - indent * 2;
-
-        // Get first line of text, truncated
-        std::string label = node->text;
-        size_t nlPos = label.find('\n');
-        if (nlPos != std::string::npos) label = label.substr(0, nlPos);
-        // Truncate to available width
-        if (static_cast<int>(label.size()) > availWidth - 2) {
-            label = label.substr(0, availWidth - 4) + "..";
-        }
-
-        // Prefix
-        std::string prefix = "\u00B7 ";
-        if (node->state == NodeState::Selected) {
-            prefix = "\u2192 ";
-        }
-
-        std::string fullLabel = prefix + label;
-        uint16_t textAttr = (node->state == NodeState::Selected) ? 0x0E : 0x0B;
-
-        ScreenRect sr;
-        sr.x = labelStart;
-        sr.y = row;
-        sr.w = fullLabel.size();
-        sr.h = 1;
-        sidebarNodeRects_[node->uuid] = sr;
-
-        for (size_t i = 0; i < fullLabel.size() && labelStart + static_cast<int>(i) < sideW - 1; i++) {
-            putChar(labelStart + static_cast<int>(i), row, static_cast<wchar_t>(fullLabel[i]));
-            putAttr(labelStart + static_cast<int>(i), row, textAttr);
-        }
-
-        row++;
-
-        // Recurse into children
-        drawSidebarNodeTree(canvas, node->uuid, indent + 1, row);
+        ++row;
+        drawSidebarTree(canvas, ui, node->uuid, indent + 1, row);
     }
 }
 
-} // namespace ic
+}  // namespace ic

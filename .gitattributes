@@ -1,2 +1,8 @@
-# Auto detect text files and perform LF normalization
+# Normalize line endings in the repository; check out with the platform's.
 * text=auto
+
+*.cpp text diff=cpp
+*.h   text diff=cpp
+*.md  text
+*.txt text
+*.yml text

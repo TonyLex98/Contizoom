@@ -1,12 +1,11 @@
 #ifndef IC_PROJECT_MANAGER_H
 #define IC_PROJECT_MANAGER_H
 
+#include <cstdint>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
-#include <functional>
-#include <map>
-#include <ctime>
 
 namespace ic {
 
@@ -14,91 +13,67 @@ class Canvas;
 class IStorage;
 
 struct ProjectInfo {
-    std::string uuid;
+    std::string uuid;  // session id, not stored on disk
     std::string name;
-    std::string path;
-    std::time_t createdAt = 0;
-    std::time_t modifiedAt = 0;
+    std::string path;  // empty until first saved
+    uint64_t createdAt = 0;
+    uint64_t modifiedAt = 0;
 
-    std::string relativePath() const;
+    // "projects/Name.canvas" for display.
+    std::string displayPath() const;
 };
 
-enum class ProjectAction {
-    None,
-    CreateNew,
-    OpenExisting,
-    SaveCurrent,
-    SaveAs,
-    CloseCurrent,
-    SwitchProject,
-    RevertChanges,
-    CloseAll,
-    Quit
-};
-
+// Open projects and their persistence. Each open project has its own
+// Canvas; edits to a project that has a path are auto-saved incrementally
+// (only the nodes that changed) once they settle.
 class ProjectManager {
 public:
-    ProjectManager();
+    explicit ProjectManager(std::unique_ptr<IStorage> storage);
     ~ProjectManager();
 
-    void setStorage(std::unique_ptr<IStorage> storage);
-    IStorage* storage() { return storage_.get(); }
-    const IStorage* storage() const { return storage_.get(); }
-
+    // Where projects are kept: %USERPROFILE%/.infinite_canvas/projects.
     static std::string defaultProjectsDir();
+    // A free "<dir>/<sanitized name>.canvas" path for a new project.
+    static std::string suggestPath(const std::string& name);
 
     std::string createProject(const std::string& name = "Untitled");
-    std::string openProject(const std::string& path);
+    std::string openProject(const std::string& path);  // "" on failure, see lastError()
     bool closeProject(const std::string& uuid);
     void closeAll();
     void switchTo(const std::string& uuid);
 
-    // Full save: writes config.json + all node files
-    bool saveCurrent();
-
-    // Save to a new path
-    bool saveAs(const std::string& newPath);
-
-    // Revert: reload from disk
-    bool revert();
+    bool saveCurrent();  // to its path, or a suggested one if never saved
+    bool saveAs(const std::string& path);
+    bool revert();       // reload the active project from disk
 
     void processAutoSave();
+    void flushAll();
 
     Canvas* activeCanvas();
     const Canvas* activeCanvas() const;
     ProjectInfo* activeProject();
     const ProjectInfo* activeProject() const;
-
     const std::vector<ProjectInfo>& projects() const { return projects_; }
-    ProjectInfo* findProject(const std::string& uuid) const;
+
     std::vector<std::string> listSavedProjects() const;
-    std::vector<std::string> recentProjects(int maxCount = 10) const;
 
-    using BeforeCloseCallback = std::function<bool(const ProjectInfo&)>;
-    void onBeforeClose(BeforeCloseCallback cb) { onBeforeClose_ = cb; }
-
-    using ActiveChangedCallback = std::function<void(const ProjectInfo*)>;
-    void onActiveChanged(ActiveChangedCallback cb) { onActiveChanged_ = cb; }
+    // Last failure (open/save/revert, or a background auto-save).
+    const std::string& lastError() const { return lastError_; }
+    // Returns and clears an auto-save failure that hasn't been shown yet.
+    std::string takeAutoSaveError();
 
 private:
     std::unique_ptr<IStorage> storage_;
-    std::vector<ProjectInfo>  projects_;
-    std::string               activeUuid_;
-    std::vector<std::string>  recentPaths_;
-
-    BeforeCloseCallback  onBeforeClose_;
-    ActiveChangedCallback onActiveChanged_;
-
+    std::vector<ProjectInfo> projects_;
     std::map<std::string, std::unique_ptr<Canvas>> canvases_;
+    std::string activeUuid_;
+    std::string lastError_;
+    std::string autoSaveError_;
 
-    // Set up auto-save for a canvas: each node change saves that node file immediately
+    ProjectInfo* find(const std::string& uuid);
     void setupAutoSave(const std::string& uuid);
-
-    static std::string generateProjectUuid();
-    void addRecent(const std::string& path);
-    void notifyActiveChanged();
 };
 
-} // namespace ic
+}  // namespace ic
 
-#endif // IC_PROJECT_MANAGER_H
+#endif  // IC_PROJECT_MANAGER_H

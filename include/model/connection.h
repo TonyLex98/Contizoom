@@ -2,73 +2,55 @@
 #define IC_CONNECTION_H
 
 #include <string>
-#include <memory>
-#include <map>
+#include <utility>
 
 namespace ic {
 
-class Node;
-
-// Connection types
 enum class ConnType {
-    Arrow,        // Directed: A -> B
-    Line,         // Undirected: A - B
-    DottedArrow,  // A -.- B
-    DottedLine,   // A . B
+    Arrow,        // A -> B
+    Line,         // A - B
+    DottedArrow,  // A .> B
+    DottedLine,   // A .. B
     DashedArrow,  // A --> B
     DashedLine    // A -- B
 };
 
-// Color index for console (0-7 for ANSI colors)
-enum class ConnColor {
-    Default = 0,
-    Red = 1,
-    Green = 2,
-    Yellow = 3,
-    Blue = 4,
-    Magenta = 5,
-    Cyan = 6,
-    White = 7
+inline bool isArrow(ConnType t) {
+    return t == ConnType::Arrow || t == ConnType::DottedArrow || t == ConnType::DashedArrow;
+}
+
+// Anchor points sit on a box's left, right and bottom edges (the top row is
+// the name label). Each edge has 3 points at 1/4, 1/2 and 3/4 of its length.
+enum class AnchorEdge { None = -1, Left = 0, Right = 1, Bottom = 2 };
+
+struct Anchor {
+    AnchorEdge edge = AnchorEdge::None;
+    int index = -1;  // 0..2 along the edge
+
+    bool valid() const { return edge != AnchorEdge::None && index >= 0 && index <= 2; }
+    bool operator==(const Anchor& o) const { return edge == o.edge && index == o.index; }
+    bool operator!=(const Anchor& o) const { return !(*this == o); }
 };
 
+// A directed link between two boxes. Endpoints are stored as anchor
+// fractions rather than pixel offsets so they stay on the same edge point
+// however the boxes move, resize or the view zooms; an invalid anchor means
+// "the box's center".
 class Connection {
 public:
     std::string uuid;
-    std::string name;           // Display name of the connection
+    std::string name;
     std::string fromUuid;
     std::string toUuid;
-
-    // Can be UUID, relative path (./, ../), or label
-    std::string label;
     ConnType type = ConnType::Arrow;
-    ConnColor color = ConnColor::Default;
-
-    // Offset from node center in pixels
-    double fromOffsetX = 0.0;
-    double fromOffsetY = 0.0;
-    double toOffsetX = 0.0;
-    double toOffsetY = 0.0;
-
-    // Which anchor point on each node's border the line is drawn from/to
-    // (0=Left,1=Right,2=Bottom edge; 0/1/2 = quarter/half/three-quarter
-    // along it), or -1 to fall back to the node's center. A fraction of
-    // the box rather than a pixel offset, so it stays on the same edge
-    // point regardless of zoom.
-    int fromAnchorEdge = -1;
-    int fromAnchorIndex = -1;
-    int toAnchorEdge = -1;
-    int toAnchorIndex = -1;
+    Anchor fromAnchor;
+    Anchor toAnchor;
 
     Connection() = default;
-
-    Connection(const std::string& uuid_, const std::string& from,
-               const std::string& to, ConnType t = ConnType::Arrow)
-        : uuid(uuid_), fromUuid(from), toUuid(to), type(t) {}
-
-    // Resolve relative references to absolute UUIDs
-    void resolveRefs(const std::map<std::string, std::shared_ptr<Node>>& allNodes);
+    Connection(std::string uuid_, std::string from, std::string to, ConnType t = ConnType::Arrow)
+        : uuid(std::move(uuid_)), fromUuid(std::move(from)), toUuid(std::move(to)), type(t) {}
 };
 
-} // namespace ic
+}  // namespace ic
 
-#endif // IC_CONNECTION_H
+#endif  // IC_CONNECTION_H

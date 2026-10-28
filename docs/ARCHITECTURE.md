@@ -1,0 +1,97 @@
+# Architecture
+
+## Layers
+
+| Layer | Directory | Depends on | Platform |
+|---|---|---|---|
+| Utilities: UTF-8, JSON, clock, paths | `util/` | std only | any |
+| Document model | `model/` | util | any |
+| Persistence | `storage/` | model, util | any |
+| Layout and rendering into a cell buffer | `view/` | model | any |
+| Input interpretation | `input/` | model, view geometry | any |
+| Projects, demo, app loop | `app/` | everything above | `App` needs Windows |
+| Console I/O, popups | `platform/` | view (CellBuffer), input (events) | Windows |
+
+Everything except `platform/` and `App` builds and runs its tests on any OS. The Win32 API is
+confined to three small files.
+
+## Model
+
+`Canvas` holds a forest of `Node`s and a set of `Connection`s.
+
+- **Coordinates.** A node's `rect` is relative to its parent's top-left corner, and roots use
+  world coordinates. `computeWorldRect()` sums the offsets.
+- **Invariants.** `parentId`, `childrenUuids` and `depth` are always consistent, and there
+  are no cycles. Every mutation that changes the hierarchy (`reparent`, `promoteNode`,
+  `demoteNode`, `createFrame`, `removeSubtree`) maintains them. `reparent()` refuses to move
+  a node into its own subtree and keeps the node's world position, so nothing jumps on screen.
+- **Repair.** `rebuildHierarchy()` recomputes derived data after loading. It detaches nodes
+  whose parent is missing and cuts parent cycles, which can only come from damaged files.
+- **Change tracking.** Mutations mark nodes (node data changed) or the canvas (structure,
+  viewport or connections changed). `processPendingChanges()` reports them through one
+  callback once edits have been quiet for 500 ms, and `flushChanges()` reports them
+  immediately.
+
+UI state (selection, hover, the in-place editors, the rubber band) is kept in `UiState`,
+outside the model. The model stays serializable and testable, and the renderer derives how
+each box is highlighted from `UiState`.
+
+## Rendering
+
+`ConsoleRenderer::render(canvas, ui, hud)` composes a whole frame into a `CellBuffer`.
+`ConsoleOutput` presents it with a single `WriteConsoleOutputW` call, so frames never flicker.
+
+1. **Screen rects.** A root is placed by the viewport transform
+   (`(world - center) * scale + areaCenter`). A child is placed proportionally inside its
+   parent's screen rect and clamped inside the parent's border, so rounding errors can't push
+   a child onto its parent's edge, even across many levels.
+2. **Level of detail.** Nodes are visited parents first. A node is a full box (≥ 4×2 cells),
+   a compact box (≥ 2×2) or a marker. Its children are only considered if the node is a full
+   box with interior room. Markers compete for cells, and when several land on one cell they
+   become a cluster `*`.
+3. **Drawing order.** Boxes (with opaque interiors) come first, then connections, then names
+   (parents over children), connection labels, overlays (rubber band, editors), and finally
+   the sidebar and status rows.
+4. **Hit-test data.** The renderer exports the screen rect of every node it actually drew.
+   `InputHandler` hit-tests against these rects, so only what is visible can be clicked.
+
+`view/geometry.h` holds the cell-level geometry used by both sides: integer cell boxes, anchor
+points, resize corners and orthogonal connection routes. A click on a connection is tested
+against the route that was drawn.
+
+## Input
+
+`InputHandler` is a small gesture state machine:
+
+```text
+None ──press on box──► PendingClick ──moved > 2 cells──► DragNodes
+  │                         └──released──► (edit if the box was already selected)
+  ├──press on corner──► Resize
+  ├──press on anchor──► Connect ──release on box──► connection created
+  ├──Shift+press──────► AreaSelect
+  └──press on empty───► Pan
+```
+
+Movement is converted from screen cells to model units using the parent's last drawn size
+(`unitsPerCell`). Because of the fractal layout, one cell is worth a different number of units
+at every level. When a drag includes both a parent and its child, only the top-level nodes
+move, so the child doesn't move twice.
+
+Letter shortcuts use virtual key codes, so they work on any keyboard layout. Typed text uses
+the character, with UTF-16 surrogate pairs combined into code points in `ConsoleInput`.
+
+## Storage
+
+`JsonStorage` stores one directory per project and one file per node (see the README for the
+layout). Notes on the implementation:
+
+- **Atomic writes.** Each file is written to `*.tmp` and then renamed over the target.
+  `config.json`, which marks a directory as a project, is written last.
+- **Incremental auto-save.** A node edit rewrites only that node's file. A structural change
+  rewrites everything and removes the files of deleted nodes.
+- **Loading** parses everything first and only touches the target canvas once nothing can
+  fail any more, so a failed revert leaves the document intact.
+- **Versioning.** `"format": "1.1"`. A reader accepts the same major version and treats a
+  missing field as `1.0` (the original format, still readable).
+- **Numbers** are written with the shortest representation that round-trips exactly. The
+  original code used the stream default of 6 significant digits, which moved boxes on every save.

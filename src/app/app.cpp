@@ -1,231 +1,289 @@
 #include "app/app.h"
+#include "app/demo.h"
 #include "model/canvas.h"
-#include "view/console_renderer.h"
+#include "platform/popup_menu.h"
 #include "storage/json_storage.h"
-#include "input/handler.h"
-#include "input/console_input.h"
-#include "app/project_manager.h"
-#include "app/project_menu.h"
-#include <iostream>
+#include "util/clock.h"
+#include "util/path.h"
 
 namespace ic {
 
-App::App() {
-    projectManager_ = std::make_unique<ProjectManager>();
-    projectManager_->setStorage(std::make_unique<JsonStorage>());
+namespace {
+
+constexpr uint64_t kStatusTimeoutMs = 4000;
+
+enum MenuId {
+    kNew = 1,
+    kOpen,
+    kSave,
+    kSaveAs,
+    kRevert,
+    kSwitch,
+    kClose,
+    kFit,
+    kQuit,
+};
+
+}  // namespace
+
+App::App() : projects_(std::make_unique<JsonStorage>()) {
+    placeholder_.canvasName = "No project open";
 }
 
 App::~App() {
-    // ProjectManager will save dirty projects on destruction
+    projects_.flushAll();
 }
 
-bool App::initialize(int viewWidth, int viewHeight) {
-    if (!renderer_)
-        renderer_ = std::make_unique<ConsoleRenderer>();
-    static_cast<ConsoleRenderer*>(renderer_.get())->initialize(viewWidth, viewHeight);
+void App::openDemo() {
+    const std::string path = path::toUtf8(path::fromUtf8(ProjectManager::defaultProjectsDir()) / "Welcome.canvas");
+    if (!projects_.openProject(path).empty()) return;
 
-    if (!projectMenu_)
-        projectMenu_ = std::make_unique<ProjectMenu>();
-
-    return true;
+    projects_.createProject("Welcome");
+    buildDemoCanvas(*projects_.activeCanvas());
+    if (!projects_.saveAs(path)) setStatus("Could not save the demo: " + projects_.lastError(), true);
 }
 
-void App::setRenderer(std::unique_ptr<IRenderer> r) { renderer_ = std::move(r); }
-void App::setProjectManager(std::unique_ptr<ProjectManager> pm) { projectManager_ = std::move(pm); }
-
-std::string App::createProject(const std::string& name) {
-    std::string uuid = projectManager_->createProject(name);
-    rebuildInputHandler();
-    return uuid;
+Canvas& App::currentCanvas() {
+    Canvas* c = projects_.activeCanvas();
+    return c ? *c : placeholder_;
 }
 
-std::string App::openProject(const std::string& path) {
-    std::string uuid = projectManager_->openProject(path);
-    if (!uuid.empty()) rebuildInputHandler();
-    return uuid;
+// The handler holds a reference to one canvas; rebuild it whenever the
+// active project changes.
+void App::bindHandler() {
+    Canvas* c = projects_.activeCanvas();
+    if (!c) {
+        handler_.reset();
+    } else if (!handler_ || &handler_->canvas() != c) {
+        handler_ = std::make_unique<InputHandler>(*c, ui_);
+        ui_ = UiState{};
+    }
+    ui_.prune(currentCanvas());
 }
 
-bool App::closeProject(const std::string& uuid) {
-    bool ok = projectManager_->closeProject(uuid);
-    if (ok) rebuildInputHandler();
-    return ok;
+void App::setStatus(const std::string& text, bool error) {
+    status_ = text;
+    statusIsError_ = error;
+    statusTime_ = clock::monotonicMillis();
 }
 
-bool App::saveCurrent() {
-    return projectManager_->saveCurrent();
-}
-
-bool App::saveAs(const std::string& newPath) {
-    return projectManager_->saveAs(newPath);
-}
-
-bool App::revert() {
-    return projectManager_->revert();
-}
-
-void App::newCanvas(const std::string& name) {
-    createProject(name);
-}
-
-Canvas* App::canvas() {
-    return projectManager_->activeCanvas();
-}
-
-const Canvas* App::canvas() const {
-    return projectManager_->activeCanvas();
-}
-
-void App::rebuildInputHandler() {
-    Canvas* c = canvas();
-    if (c) {
-        if (!inputHandler_ || &inputHandler_->canvas() != c) {
-            inputHandler_ = std::make_unique<InputHandler>(*c);
-        }
+void App::render() {
+    HudInfo hud;
+    if (const ProjectInfo* p = projects_.activeProject()) {
+        hud.projectName = p->name;
+        hud.unsaved = p->path.empty();
     } else {
-        inputHandler_.reset();
+        hud.projectName = "No project - right-click for the menu";
     }
+    hud.status = status_;
+    hud.statusIsError = statusIsError_;
+
+    renderer_.render(currentCanvas(), ui_, hud);
+    output_.present(renderer_.buffer());
+    if (handler_) handler_->setLayout(renderer_.screenRects(), renderer_.sidebarRects(), renderer_.canvasArea());
 }
 
-void App::showProjectMenu(int mx, int my) {
-    if (!projectMenu_) return;
-
-    ProjectAction action = projectMenu_->open(*projectManager_, mx, my);
-
-    switch (action) {
-        case ProjectAction::CreateNew: {
-            createProject("Untitled");
-            break;
-        }
-        case ProjectAction::OpenExisting: {
-            break;
-        }
-        case ProjectAction::SaveCurrent:
-            saveCurrent();
-            break;
-        case ProjectAction::SaveAs:
-            break;
-        case ProjectAction::CloseCurrent: {
-            auto info = projectManager_->activeProject();
-            if (info) closeProject(info->uuid);
-            break;
-        }
-        case ProjectAction::CloseAll:
-            projectManager_->closeAll();
-            rebuildInputHandler();
-            break;
-        case ProjectAction::RevertChanges:
-            revert();
-            break;
-        case ProjectAction::Quit:
-            quit();
-            break;
-        case ProjectAction::None:
-            break;
+int App::run() {
+    if (!input_.setup()) return 1;
+    renderer_.resize(input_.width(), input_.height());
+    bindHandler();
+    if (handler_ && currentCanvas().allNodes().size() > 0) {
+        // First frame establishes the layout the camera fit needs.
+        render();
+        handler_->fitAll();
     }
-}
+    render();
 
-void App::run() {
     running_ = true;
-
-    ConsoleInput input;
-    input.setup();
-
-    int w = input.getWidth();
-    int h = input.getHeight();
-    static_cast<ConsoleRenderer*>(renderer_.get())->initialize(w, h);
-    static_cast<ConsoleRenderer*>(renderer_.get())->clear();
-    renderOnce();
-
     while (running_) {
-        projectManager_->processAutoSave();
-
-        auto resizeOpt = input.pollResize();
-        if (resizeOpt) {
-            w = resizeOpt->width;
-            h = resizeOpt->height;
-            input.updateBufferSize();
-            static_cast<ConsoleRenderer*>(renderer_.get())->initialize(w, h);
-            if (inputHandler_) inputHandler_->setViewSize(w, h);
-            renderOnce();
+        projects_.processAutoSave();
+        if (std::string err = projects_.takeAutoSaveError(); !err.empty()) {
+            setStatus(err, true);
+            render();
+        }
+        if (!status_.empty() && clock::monotonicMillis() - statusTime_ > kStatusTimeoutMs) {
+            status_.clear();
+            render();
+        }
+        if (auto r = input_.pollResize()) {
+            renderer_.resize(r->width, r->height);
+            render();
         }
 
-        auto evOpt = input.waitForEvent();
-        if (!evOpt) continue;
-
-        // Right-click: show context menu
-        if (evOpt->type == InputType::MouseDown && evOpt->button == 1) {
-            showProjectMenu(evOpt->mouseX, evOpt->mouseY);
-            renderOnce();
+        auto ev = input_.waitForEvent();
+        if (!ev) continue;
+        if (ev->type == InputType::KeyRelease) continue;
+        if (ev->type == InputType::Resize) {
+            renderer_.resize(ev->width, ev->height);
+            render();
             continue;
         }
 
-        InputResult res = inputHandler_ ? inputHandler_->process(*evOpt) : InputResult::NotHandled;
-        switch (res) {
-            case InputResult::RequestQuit:   running_ = false; break;
-            case InputResult::RequestSave:   saveCurrent(); break;
-            case InputResult::RequestNew:    createProject("Untitled"); break;
-            case InputResult::SidebarNodeClick:
-                if (inputHandler_) zoomToNode(inputHandler_->sidebarClickedUuid());
-                break;
-            default: break;
+        if (handler_) {
+            const int mx = ev->mouseX, my = ev->mouseY;
+            const InputResult result = handler_->process(*ev);
+            if (result == InputResult::RequestMenu) showProjectMenu(mx, my);
+            else handle(result);
+        } else if (ev->type == InputType::MouseDown) {
+            showProjectMenu(ev->mouseX, ev->mouseY);
+        } else if (ev->type == InputType::KeyPress && ev->mods.ctrl) {
+            if (ev->key == 'N') handle(InputResult::RequestNew);
+            if (ev->key == 'Q') handle(InputResult::RequestQuit);
         }
-
-        if (evOpt->type == InputType::Resize) {
-            w = evOpt->width;
-            h = evOpt->height;
-            input.updateBufferSize();
-            static_cast<ConsoleRenderer*>(renderer_.get())->initialize(w, h);
-            if (inputHandler_) inputHandler_->setViewSize(w, h);
-        }
-
-        bool needRender = (evOpt->type != InputType::KeyRelease);
-        if (evOpt->type == InputType::MouseMove && inputHandler_ && !inputHandler_->isDragging())
-            needRender = false;
-
-        if (needRender) renderOnce();
+        if (running_) render();
     }
 
-    input.restore();
-    std::cout << "\nExiting...\n";
-    if (onQuit_) onQuit_(*this);
+    projects_.flushAll();
+    input_.restore();
+    return 0;
 }
 
-bool App::processFrame() {
-    projectManager_->processAutoSave();
-    renderOnce();
-    if (onFrame_) onFrame_(*this);
-    return running_;
+void App::handle(InputResult result) {
+    switch (result) {
+        case InputResult::RequestQuit:
+            if (confirmQuit()) running_ = false;
+            break;
+        case InputResult::RequestSave:
+            if (projects_.saveCurrent()) setStatus("Saved to " + projects_.activeProject()->displayPath());
+            else setStatus("Save failed: " + projects_.lastError(), true);
+            break;
+        case InputResult::RequestNew:
+            projects_.createProject("Untitled");
+            bindHandler();
+            setStatus("New project");
+            break;
+        case InputResult::SidebarNodeClick:
+            if (handler_) handler_->zoomToNode(handler_->sidebarClickedUuid());
+            break;
+        default: break;
+    }
 }
 
-void App::renderOnce() {
-    Canvas* c = canvas();
-    if (c && renderer_) {
-        renderer_->render(*c);
-        if (auto cr = dynamic_cast<ConsoleRenderer*>(renderer_.get())) {
-            if (inputHandler_) {
-                inputHandler_->setScreenRects(cr->screenRects());
-                inputHandler_->setSidebarNodeRects(cr->sidebarNodeRects());
-                inputHandler_->setCanvasArea(cr->canvasArea());
+// ====================================================================
+// Menus
+// ====================================================================
+
+void App::showProjectMenu(int x, int y) {
+    const ProjectInfo* p = projects_.activeProject();
+    const bool open = p != nullptr;
+    const bool saved = open && !p->path.empty();
+
+    std::vector<MenuItem> items = {
+        MenuItem::item(kNew, "New project", "Ctrl+N"),
+        MenuItem::item(kOpen, "Open project..."),
+        MenuItem::item(kSwitch, "Switch project...", "", projects_.projects().size() > 1),
+        MenuItem::line(),
+        MenuItem::item(kSave, "Save", "Ctrl+S", open),
+        MenuItem::item(kSaveAs, "Save as...", "", open),
+        MenuItem::item(kRevert, "Revert to saved", "", saved),
+        MenuItem::item(kClose, "Close project", "", open),
+        MenuItem::line(),
+        MenuItem::item(kFit, "Fit view", "0", open),
+        MenuItem::item(kQuit, "Quit", "Ctrl+Q"),
+    };
+
+    PopupMenu menu(input_, output_);
+    switch (menu.choose("Project", items, x, y, renderer_.width(), renderer_.height())) {
+        case kNew: handle(InputResult::RequestNew); break;
+        case kOpen: openProjectDialog(x, y); break;
+        case kSwitch: switchProjectDialog(x, y); break;
+        case kSave: handle(InputResult::RequestSave); break;
+        case kSaveAs: saveAsDialog(); break;
+        case kRevert:
+            if (projects_.revert()) {
+                ui_ = UiState{};
+                setStatus("Reverted to the saved version");
+            } else {
+                setStatus("Revert failed: " + projects_.lastError(), true);
             }
-        }
-    } else if (renderer_) {
-        static_cast<ConsoleRenderer*>(renderer_.get())->clear();
+            break;
+        case kClose:
+            projects_.closeProject(p->uuid);
+            bindHandler();
+            break;
+        case kFit:
+            if (handler_) handler_->fitAll();
+            break;
+        case kQuit: handle(InputResult::RequestQuit); break;
+        default: break;
     }
 }
 
-void App::zoomToNode(const std::string& uuid) {
-    Canvas* c = canvas();
-    if (!c) return;
-    auto node = c->getNode(uuid);
-    if (!node) return;
-    Rect world = c->computeWorldRect(uuid);
-    c->viewport_.centerX = world.x + world.width / 2.0;
-    c->viewport_.centerY = world.y + world.height / 2.0;
-    c->viewport_.zoomLevel = node->zoomLevel;
-    c->markCanvasChanged();
-    renderOnce();
+void App::openProjectDialog(int x, int y) {
+    const auto paths = projects_.listSavedProjects();
+    if (paths.empty()) {
+        setStatus("No saved projects in " + ProjectManager::defaultProjectsDir(), true);
+        return;
+    }
+    std::vector<MenuItem> items;
+    for (size_t i = 0; i < paths.size(); ++i) {
+        items.push_back(MenuItem::item(static_cast<int>(i), path::toUtf8(path::fromUtf8(paths[i]).stem())));
+    }
+    render();  // clear the previous menu
+    PopupMenu menu(input_, output_);
+    const int choice = menu.choose("Open", items, x, y, renderer_.width(), renderer_.height());
+    if (choice < 0) return;
+
+    if (projects_.openProject(paths[static_cast<size_t>(choice)]).empty()) {
+        setStatus("Open failed: " + projects_.lastError(), true);
+        return;
+    }
+    bindHandler();
+    render();
+    if (handler_) handler_->fitAll();
+    setStatus("Opened " + projects_.activeProject()->name);
 }
 
-void App::quit() { running_ = false; }
+void App::saveAsDialog() {
+    ProjectInfo* p = projects_.activeProject();
+    Canvas* c = projects_.activeCanvas();
+    if (!p || !c) return;
 
-} // namespace ic
+    render();
+    PopupMenu menu(input_, output_);
+    auto name = menu.prompt("Save as - project name", p->name, renderer_.width(), renderer_.height());
+    if (!name || name->empty()) return;
+
+    c->canvasName = *name;
+    const std::string path = ProjectManager::suggestPath(*name);
+    if (projects_.saveAs(path)) setStatus("Saved to " + p->displayPath());
+    else setStatus("Save failed: " + projects_.lastError(), true);
+}
+
+void App::switchProjectDialog(int x, int y) {
+    std::vector<MenuItem> items;
+    const auto& list = projects_.projects();
+    for (size_t i = 0; i < list.size(); ++i) {
+        items.push_back(MenuItem::item(static_cast<int>(i), list[i].name, list[i].path.empty() ? "unsaved" : ""));
+    }
+    render();
+    PopupMenu menu(input_, output_);
+    const int choice = menu.choose("Switch to", items, x, y, renderer_.width(), renderer_.height());
+    if (choice < 0) return;
+    projects_.switchTo(list[static_cast<size_t>(choice)].uuid);
+    bindHandler();
+}
+
+// Projects that were never saved would be lost on exit; ask first.
+bool App::confirmQuit() {
+    const ProjectInfo* p = projects_.activeProject();
+    if (!p || !p->path.empty() || currentCanvas().allNodes().empty()) return true;
+
+    std::vector<MenuItem> items = {
+        MenuItem::item(1, "Save and quit"),
+        MenuItem::item(2, "Quit without saving"),
+        MenuItem::item(3, "Cancel", "Esc"),
+    };
+    PopupMenu menu(input_, output_);
+    const int w = renderer_.width(), h = renderer_.height();
+    switch (menu.choose("\"" + p->name + "\" is not saved", items, w / 2 - 15, h / 2 - 3, w, h)) {
+        case 1:
+            if (projects_.saveCurrent()) return true;
+            setStatus("Save failed: " + projects_.lastError(), true);
+            return false;
+        case 2: return true;
+        default: return false;
+    }
+}
+
+}  // namespace ic

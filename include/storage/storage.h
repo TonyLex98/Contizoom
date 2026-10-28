@@ -2,7 +2,6 @@
 #define IC_STORAGE_H
 
 #include <string>
-#include <memory>
 #include <vector>
 
 namespace ic {
@@ -10,29 +9,28 @@ namespace ic {
 class Canvas;
 class Node;
 
+// Persistence backend. Paths are UTF-8. On failure methods return false
+// and lastError() describes what went wrong (for the status bar).
 class IStorage {
 public:
     virtual ~IStorage() = default;
 
-    // Save entire canvas: writes config.json + all node files
+    // Writes the whole project: canvas config plus every node.
     virtual bool saveCanvas(const Canvas& canvas, const std::string& path) = 0;
 
-    // Load canvas from disk
+    // Writes a single node (incremental auto-save).
+    virtual bool saveNode(const Node& node, const std::string& canvasPath) = 0;
+
+    // Replaces `canvas` contents with the project at `path`. On failure the
+    // canvas is left untouched.
     virtual bool loadCanvas(Canvas& canvas, const std::string& path) = 0;
 
-    // Get format version
-    virtual std::pair<int, int> getFormatVersion(const std::string& path) const = 0;
-
-    // Check if path is a valid project
     virtual bool isValid(const std::string& path) const = 0;
-
-    // List all saved projects in a directory
     virtual std::vector<std::string> listCanvases(const std::string& dir) const = 0;
 
-    // Save a single node: writes nodes/{uuid}.json
-    virtual bool saveNode(const Node* node, const std::string& canvasPath) = 0;
+    virtual const std::string& lastError() const = 0;
 };
 
-} // namespace ic
+}  // namespace ic
 
-#endif // IC_STORAGE_H
+#endif  // IC_STORAGE_H

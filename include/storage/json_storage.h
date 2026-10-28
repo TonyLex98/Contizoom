@@ -2,40 +2,40 @@
 #define IC_JSON_STORAGE_H
 
 #include "storage/storage.h"
+
 #include <string>
 #include <vector>
 
 namespace ic {
 
-// One node = one file: nodes/{uuid}.json
-// Canvas config: config.json (viewport, connections, canvas name)
+// One project = one directory; one node = one file, so auto-saving an edit
+// rewrites a few hundred bytes instead of the whole document:
 //
-// Directory structure:
 //   project.canvas/
-//   ├── config.json    (viewport, connections, canvas name)
+//   ├── config.json      format version, name, viewport, connections
 //   └── nodes/
-//       ├── {uuid}.json  (all node data including text)
+//       ├── {uuid}.json  one box: name, text, parent, rect, ...
 //       └── ...
-
+//
+// Every file is written to a temporary file first and then renamed over
+// the old one, so a crash mid-save never leaves a half-written file.
 class JsonStorage : public IStorage {
 public:
-    JsonStorage() = default;
-
     bool saveCanvas(const Canvas& canvas, const std::string& path) override;
+    bool saveNode(const Node& node, const std::string& canvasPath) override;
     bool loadCanvas(Canvas& canvas, const std::string& path) override;
-    std::pair<int, int> getFormatVersion(const std::string& path) const override;
     bool isValid(const std::string& path) const override;
     std::vector<std::string> listCanvases(const std::string& dir) const override;
+    const std::string& lastError() const override { return lastError_; }
 
-    // Save a single node to its own file: nodes/{uuid}.json
-    bool saveNode(const Node* node, const std::string& canvasPath) override;
+    // Number of node files skipped as unreadable by the last loadCanvas().
+    int skippedNodeFiles() const { return skippedNodeFiles_; }
 
 private:
-    static std::string nodesDir(const std::string& canvasPath);
-    static std::string nodeFilePath(const std::string& canvasPath, const std::string& uuid);
-    static std::string configPath(const std::string& canvasPath);
+    std::string lastError_;
+    int skippedNodeFiles_ = 0;
 };
 
-} // namespace ic
+}  // namespace ic
 
-#endif // IC_JSON_STORAGE_H
+#endif  // IC_JSON_STORAGE_H

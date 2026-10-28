@@ -1,11 +1,29 @@
+# Build output
 build/
+build-*/
+out/
+cmake-build-*/
+CMakeUserPresets.json
+
+# Binaries
 *.exe
+*.dll
 *.lib
+*.a
+*.o
+*.obj
 *.pdb
 *.ilk
+
+# IDEs
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
 *.sdf
 *.opensdf
-*.vcxproj.user
-*.suo
-.vs/
+
+# Local project data
+*.canvas/
 data/
