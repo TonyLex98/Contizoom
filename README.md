@@ -15,28 +15,28 @@ UTF-8 handling, layout engine and test harness are all part of the project.
  ▪ Welcome to Infinite C…│              │A zoomable outline: boxes inside boxes, as deep as you like.              │
    ▪ Basics              │              │ ┌───────────Basics────────────┐     ┌────────────Structure─────────────┐ │
      · Try it            │              │ │N          new box (inside th│     │Tab        lift a box out of its p│ │
-   ▪ Structure           │              │ •Dbl-click  edit text, or the •     •Shift+Tab  nest it into the box ab• │
+   ▪ Structure           │              │ │Dbl-click  edit text; on the │     │Shift+Tab  nest it into the box ab│ │
      · Idea              │              │ │Drag       move   Corner   re│     │F          wrap the selection in a│ │
-     · Plan              │              │ • ┌───Try it───┐              •     •┌──Idea──┐  ┌──Plan──┐  ┌──Done──┐• │
+     · Plan              │              │ │ ┌───Try it───┐              │     │┌──Idea──┐  ┌──Plan──┐  ┌──Done──┐│ │
      · Done              │              │ │ │S           │              │     ││        │─►│        │─►│        ││ │
-   · Navigation          │              • • └────────────┘              •     •└────────┘  └────────┘  └────────┘• •
+   · Navigation          │              │ │ └────────────┘              │     │└────────┘  └────────┘  └────────┘│ │
    ▪ Connections         │              │ │                             │     │                                  │ │
-     · From              │              │ └───────•──────•───────•──────┘     └────────•────────•───────•────────┘ │
+     · From              │              │ └─────────────────────────────┘     └──────────────────────────────────┘ │
      · To                │              │                                                                          │
    · Projects            │              │                                                                          │
                          │              │                                                                          │
                          │              │                                                                          │
                          │              │ ┌─────────Navigation──────────┐     ┌─────────Connections──────────┐     │
-                         │              │ │Wheel / + -  zoom      WASD /│     │Drag from a • on one box to an│     │
-                         │              • •0            fit everything o•     •Click a line to select it, dou•     •
+                         │              │ │Wheel / + -  zoom      WASD /│     │Hover a box, drag from one of │     │
+                         │              │ │0            fit everything o│     │Click a line: T style, V rever│     │
                          │              │ │Enter        zoom to the sele│     │                              │     │
-                         │              │ •Sidebar      click a box in t•-----•                              •     │
+                         │              │ │Sidebar      click a box in t│-----│                              │     │
                          │              │ │                             │     │  ┌──From──┐      ┌───To───┐  │     │
-                         │              │ •                             •     •  └────────┘─────►└────────┘  •     │
+                         │              │ │                             │     │  └────────┘─────►└────────┘  │     │
                          │              │ │                             │     │                              │     │
-                         │              │ └───────•──────•───────•──────┘     └───────•───────•──────•───────┘     │
+                         │              │ └─────────────────────────────┘     └──────────────────────────────┘     │
                          │              │                                                                          │
-                         │              •                                                                          •
+                         │              │                                                                          │
                          │              │                                                                          │
                          │              │                                                                          │
                          │              │ ┌─────────────────────────────Projects─────────────────────────────┐     │
@@ -58,15 +58,21 @@ picture on Linux.</sub>
 - **Structure.** Use Tab to lift a box out of its parent and Shift+Tab to nest it into the
   previous sibling. Press F to wrap a selection in a frame. When a box changes parent, it keeps
   its position on screen, and the model refuses moves that would create a cycle.
-- **Connections.** Drag from one of the `•` anchor points on a box to another box. Lines are
-  routed orthogonally from edge to edge, can be selected and named, and hit-testing uses
-  exactly the drawn route.
+- **Connections.** Hover a box and drag from one of its `•` anchor points to another box. A live
+  preview follows the mouse and snaps to the target's anchors. Lines are routed orthogonally
+  from edge to edge and can be selected, named, restyled (arrow, line, dashed, dotted) and
+  reversed. Linking the same pair twice selects the existing link. When the endpoints collapse
+  into their ancestors as you zoom out, the link is drawn, dimmed, between the visible ancestors.
 - **Resize** a selected box by its corners. Its whole subtree scales with it, and a box can't
   be shrunk below what its children need.
 - **Outline sidebar** with the full tree. Click an entry to fly to that box.
-- **Projects** auto-save every edit once a project has been saved. Only the boxes that changed
-  are rewritten, and each file is written atomically. Right-click opens the project menu:
-  new, open, switch, save, save as, revert and close. Quitting with an unsaved project asks first.
+- **Undo / redo** for every edit (`Ctrl+Z` / `Ctrl+Y`). A drag or resize is one step.
+- **Context menus.** Right-click a box, a line or empty canvas.
+- **Safe storage.** A project is saved automatically from its first edit on, so there is no
+  "unsaved" state to lose. Auto-save writes only what changed: one file per edited box, and
+  `config.json` for the camera and links. Every file is written atomically. A lock file warns
+  when the same project is open in two windows. Projects can be copied ("Save a copy as") and
+  exported to a Markdown outline.
 
 ## Controls
 
@@ -75,18 +81,19 @@ picture on Linux.</sub>
 | New box (inside the selected one) | `N` |
 | Select / add to selection / area select | Click / `Shift`+click / `Shift`+drag on empty canvas |
 | Move | Drag a box |
-| Edit text / rename | Double-click body / header, or `E` / `R` |
+| Edit text / rename | Double-click body / header, or `E` / `F2` |
 | Resize | Drag a corner of a selected box |
-| Connect | Drag from a `•` anchor (or `Ctrl`+drag a box) onto another box |
-| Name a connection | Double-click the line |
+| Connect | Hover a box, drag from a `•` anchor (or `Ctrl`+drag the box) onto another box |
+| Connection: style / reverse / rename | Select the line, then `T` / `V` / `F2` (or double-click it) |
 | Delete box (with contents) or connection | `X` or `Del` |
+| Undo / redo | `Ctrl+Z` / `Ctrl+Y` |
 | Un-nest / nest | `Tab` / `Shift`+`Tab` |
 | Frame the selection | `F` |
 | Zoom | Mouse wheel (toward the cursor), `+` `-`, `[` `]` (×2) |
 | Pan | Drag empty canvas, `WASD`, `HJKL` or arrow keys |
 | Fit everything / zoom to selection | `0` or `Home` / `Enter` |
-| Project menu | Right-click |
-| Save / new project / quit | `Ctrl+S` / `Ctrl+N` / `Ctrl+Q` |
+| Context menu (box, line or project) | Right-click |
+| Save now / new project / quit | `Ctrl+S` / `Ctrl+N` / `Ctrl+Q` |
 
 While editing: `Enter` inserts a new line (it confirms in a name), and `Ctrl+Enter` or a click
 outside saves. `Esc` cancels.
@@ -114,7 +121,7 @@ cmake --build build
 ```text
 infinite_canvas                      open the welcome project (created on first launch)
 infinite_canvas <project.canvas>     open a project
-infinite_canvas -n <name>            start a new, unsaved project
+infinite_canvas -n <name>            start a new project
 infinite_canvas --snapshot <out.txt> [project.canvas] [--size WxH]
                                      render a project (default: the demo) to a text file
 ```
@@ -128,14 +135,23 @@ few hundred bytes instead of the whole document:
 
 ```text
 Name.canvas/
-├── config.json      {"format": "1.1", "canvas_name", "viewport", "connections": [...]}
+├── config.json      {"format": "1.1", "canvas_name", "modified_at", "node_count",
+│                     "viewport", "connections": [...]}
+├── .lock            "<pid> <session>" while the project is open
 └── nodes/
     └── <uuid>.json  {"uuid", "name", "text", "parentId", "x", "y", "width", "height", ...}
 ```
 
-Readers accept any `1.x` file and ignore unknown fields. Files from the original `1.0` format
-still open. A damaged box file is skipped (and counted) instead of making the whole project
-unopenable.
+- **What gets written.** Editing a box rewrites its file and `config.json`, deleting a box
+  removes its file, and moving the camera rewrites `config.json` only. An undo or redo rewrites
+  everything.
+- **Atomic writes.** Every file is written to a `.tmp` file and then renamed. A crash can leave
+  an old file, but never a half-written one.
+- **Compatibility.** Readers accept any `1.x` file and ignore unknown fields, and files from the
+  original `1.0` format still open. A damaged box file is skipped (and counted) instead of
+  making the whole project unopenable.
+- **Export.** "Export as Markdown" writes `Name.md` next to the project: headings for boxes,
+  paragraphs for their text, and a list of the connections.
 
 ## Architecture
 

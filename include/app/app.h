@@ -9,6 +9,7 @@
 #include "view/ui_state.h"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -40,7 +41,10 @@ private:
     ConsoleInput input_;
     ConsoleOutput output_;
     ConsoleRenderer renderer_;
-    std::unique_ptr<InputHandler> handler_;
+    // One handler (and so one undo history) per open project.
+    std::map<std::string, std::unique_ptr<InputHandler>> handlers_;
+    InputHandler* handler_ = nullptr;
+    std::string boundProject_;
     Canvas placeholder_;  // shown when no project is open
 
     bool running_ = false;
@@ -54,11 +58,13 @@ private:
     void setStatus(const std::string& text, bool error = false);
     void handle(InputResult result);
 
+    void showContextMenu();
     void showProjectMenu(int x, int y);
+    void showNodeMenu(int x, int y);
+    void showConnectionMenu(int x, int y);
     void openProjectDialog(int x, int y);
     void saveAsDialog();
     void switchProjectDialog(int x, int y);
-    bool confirmQuit();
 };
 
 }  // namespace ic

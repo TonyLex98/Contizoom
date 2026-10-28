@@ -45,11 +45,15 @@ endif()
 # ----------------------------------------------------------------------------
 add_library(infinite_canvas_core STATIC
     src/util/json.cpp
+    src/util/process.cpp
     src/model/node.cpp
     src/model/canvas.cpp
+    src/storage/document_json.cpp
     src/storage/json_storage.cpp
+    src/storage/markdown_export.cpp
     src/view/console_renderer.cpp
     src/input/handler.cpp
+    src/input/history.cpp
     src/app/project_manager.cpp
     src/app/demo.cpp
 )
@@ -87,6 +91,8 @@ if(IC_BUILD_TESTS)
         tests/test_storage.cpp
         tests/test_renderer.cpp
         tests/test_input.cpp
+        tests/test_history.cpp
+        tests/test_project.cpp
     )
     target_link_libraries(ic_tests PRIVATE infinite_canvas_core)
     add_test(NAME unit_tests COMMAND ic_tests)

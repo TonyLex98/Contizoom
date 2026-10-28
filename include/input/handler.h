@@ -1,12 +1,14 @@
 #ifndef IC_INPUT_HANDLER_H
 #define IC_INPUT_HANDLER_H
 
+#include "input/history.h"
 #include "input/input_event.h"
 #include "model/canvas.h"
 #include "view/geometry.h"
 #include "view/ui_state.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -15,9 +17,36 @@ namespace ic {
 
 enum class InputResult { Handled, NotHandled, RequestQuit, RequestSave, RequestNew, RequestMenu, SidebarNodeClick };
 
+// What a right-click landed on, so the app can show the matching menu.
+struct ContextTarget {
+    enum class Kind { Canvas, Node, Connection } kind = Kind::Canvas;
+    std::string uuid;
+    int x = 0, y = 0;  // screen cell of the click
+};
+
+// Editing commands, available from keys and from context menus.
+enum class Action {
+    NewBox,
+    EditText,
+    Rename,
+    Delete,
+    Frame,
+    Promote,
+    Demote,
+    ZoomTo,
+    FitAll,
+    ConnectionRename,
+    ConnectionReverse,
+    ConnectionNextStyle,
+    ConnectionDelete,
+    Undo,
+    Redo,
+};
+
 // Turns raw screen-space input into edits of the Canvas and UiState.
 // Hit testing uses the screen rects of the last rendered frame, so what
-// can be clicked is exactly what was drawn. Platform independent.
+// can be clicked is exactly what was drawn. Every edit goes through the
+// undo history. Platform independent.
 class InputHandler {
 public:
     InputHandler(Canvas& canvas, UiState& ui);
@@ -26,10 +55,18 @@ public:
 
     // Layout of the last rendered frame.
     void setLayout(const std::map<std::string, ScreenRect>& screenRects,
-                   const std::map<std::string, ScreenRect>& sidebarRects, const CanvasArea& area);
+                   const std::map<std::string, ScreenRect>& sidebarRects, const CanvasArea& area,
+                   const ScreenRect& editorRect = ScreenRect{});
 
     const std::string& sidebarClickedUuid() const { return sidebarClicked_; }
+    const ContextTarget& contextTarget() const { return context_; }
     bool isEditing() const { return ui_.nodeEditor.active || ui_.connEditor.active; }
+
+    void perform(Action action);
+    void setConnectionStyle(ConnType type);  // for the selected connection
+    bool canUndo() const { return history_.canUndo(); }
+    bool canRedo() const { return history_.canRedo(); }
+    void clearHistory() { history_.clear(); }
 
     Canvas& canvas() { return canvas_; }
 
@@ -40,11 +77,14 @@ public:
 private:
     Canvas& canvas_;
     UiState& ui_;
+    History history_;
 
     std::map<std::string, ScreenRect> screenRects_;
     std::map<std::string, ScreenRect> sidebarRects_;
     CanvasArea area_ = CanvasArea::forConsole(120, 40);
+    ScreenRect editorRect_;
     std::string sidebarClicked_;
+    ContextTarget context_;
 
     // Mouse gesture in progress.
     enum class Gesture { None, PendingClick, DragNodes, Pan, Resize, Connect, AreaSelect };
@@ -52,7 +92,7 @@ private:
     int pressX_ = 0, pressY_ = 0;
     int lastX_ = 0, lastY_ = 0;
     std::string pressNode_;
-    bool pressWasSelected_ = false;
+    std::string gestureSnapshot_;  // document before a drag/resize/connect, for undo
 
     struct DragStart {
         Rect rect;
@@ -93,30 +133,32 @@ private:
     std::shared_ptr<Node> nodeAt(int x, int y) const;
     std::string connectionAt(int x, int y) const;
     ResizeCorner resizeCornerAt(int x, int y, std::string& uuid) const;
-    Anchor anchorAt(int x, int y, std::string& uuid) const;
+    Anchor anchorAt(int x, int y, std::string& uuid, bool anyBox) const;
     bool isDoubleClick(const std::string& target, int x, int y, uint64_t now) const;
     void updateHover(int x, int y);
 
+    // Runs an edit and records it as one undo step if it changed anything.
+    void edit(const std::function<void()>& change);
+    void afterContentReplaced();
+
     // Actions.
     void select(const std::string& uuid, bool additive);
+    void selectConnection(const std::string& uuid);
     std::vector<std::string> topLevelSelection() const;
     void beginDrag();
     void beginResize(const std::string& uuid, ResizeCorner corner);
     void updateResize(int x, int y);
+    void finishConnect(int x, int y);
     void finishAreaSelect();
-    void createNode();
-    void deleteSelection();
-    void promoteSelection();
-    void demoteSelection();
-    void frameSelection();
+    void createBox();
     void pan(double cellsX, double cellsY);
     void zoomAt(double factor, double sx, double sy);
+    std::pair<int, int> connectionLabelCell(const std::string& connUuid) const;
 
     // Node editor.
     void startEditing(const std::string& uuid, bool name);
     void editorKey(const InputEvent& e);
     void commitEdit();
-    void cancelEdit();
 
     // Connection label editor.
     void startConnectionEdit(const std::string& connUuid, int x, int y);

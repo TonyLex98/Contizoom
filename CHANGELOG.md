@@ -43,13 +43,25 @@ A full review and rework of the codebase.
 - The welcome project lives in the projects folder instead of next to the executable.
 - The separate "zoom level" concept was removed. There is one zoom, plus fit-all (`0`) and
   zoom-to-selection (`Enter`).
+- A plain click on a selected box no longer opens the editor (use a double-click, `E` or `F2`).
+  The text editor is sized to its text instead of covering the whole box with its children.
+- Anchor points only appear on the hovered or selected box, and on every box while a link is
+  being dragged. Before, nine dots sat on every box.
+- New projects are saved from their first edit on, with no "unsaved" state. Auto-save writes
+  only the changed boxes. A camera move used to rewrite every box file.
 
 ### Added
 - A JSON parser and serializer (`util/json`), and UTF-8 utilities.
 - Project format 1.1 with an explicit version. Format 1.0 files still open.
 - `--snapshot` headless rendering, plus `--version` and `--help`.
-- Confirmation before quitting with an unsaved project.
-- Unit tests, a CMake test target, and CI on MSVC, GCC and Clang with sanitizers.
+- Undo/redo for every edit (`Ctrl+Z` / `Ctrl+Y`), kept per open project.
+- Connections: a live preview while dragging, styles (`T`), reverse (`V`) and rename (`F2`).
+  Duplicate links are prevented, and links to boxes collapsed by zoom are shown between their
+  visible ancestors. A click on a line inside a box selects the line, not the box.
+- Context menus for boxes, connections and the project.
+- A project lock that warns when the same project is open in two windows, "Save a copy as",
+  Markdown export, and an Open list showing the date and number of boxes.
+- Unit tests (69 cases), a CMake test target, and CI on MSVC, GCC and Clang with sanitizers.
 
 ## 0.1.0
 

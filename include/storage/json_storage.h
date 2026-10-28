@@ -22,9 +22,12 @@ namespace ic {
 class JsonStorage : public IStorage {
 public:
     bool saveCanvas(const Canvas& canvas, const std::string& path) override;
-    bool saveNode(const Node& node, const std::string& canvasPath) override;
+    bool saveConfig(const Canvas& canvas, const std::string& path) override;
+    bool saveNode(const Node& node, const std::string& path) override;
+    bool removeNode(const std::string& uuid, const std::string& path) override;
     bool loadCanvas(Canvas& canvas, const std::string& path) override;
     bool isValid(const std::string& path) const override;
+    bool readSummary(const std::string& path, ProjectSummary& out) const override;
     std::vector<std::string> listCanvases(const std::string& dir) const override;
     const std::string& lastError() const override { return lastError_; }
 

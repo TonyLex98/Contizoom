@@ -79,6 +79,18 @@ struct UiState {
     std::string anchorHoverNode;
     Anchor anchorHover;
 
+    // Live line from the source to the mouse while dragging a connection.
+    bool connectPreview = false;
+    int previewX = 0, previewY = 0;
+    Anchor previewFromAnchor;
+
+    // Connection anchors are only shown where they're useful: on the box
+    // under the mouse, on selected boxes, and on every box (as drop
+    // targets) while a connection is being dragged.
+    bool showsAnchors(const std::string& uuid) const {
+        return !connectionSource.empty() || uuid == hovered || isSelected(uuid);
+    }
+
     bool isSelected(const std::string& uuid) const { return selected.count(uuid) > 0; }
 
     NodeState stateOf(const std::string& uuid) const {

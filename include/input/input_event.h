@@ -20,6 +20,7 @@ namespace key {
 constexpr int Backspace = 0x08, Tab = 0x09, Enter = 0x0D, Escape = 0x1B, Space = 0x20;
 constexpr int End = 0x23, Home = 0x24, Left = 0x25, Up = 0x26, Right = 0x27, Down = 0x28, Delete = 0x2E;
 constexpr int Add = 0x6B, Subtract = 0x6D, OemPlus = 0xBB, OemMinus = 0xBD;
+constexpr int F2 = 0x71;
 }  // namespace key
 
 // A raw input event in screen coordinates (console cells).

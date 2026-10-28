@@ -145,20 +145,44 @@ TEST(canvas_resolve_overlaps_separates_siblings) {
 
 TEST(canvas_change_tracking_batches_until_flush) {
     Tree t;
+    t.c.discardPendingChanges();
     int calls = 0;
-    std::set<std::string> seen;
-    t.c.onChanged([&](const std::set<std::string>& nodes, bool) {
+    Canvas::ChangeSet seen;
+    t.c.onChanged([&](const Canvas::ChangeSet& changes) {
         ++calls;
-        seen.insert(nodes.begin(), nodes.end());
+        seen = changes;
     });
     t.c.markChanged(t.a);
     t.c.processPendingChanges();  // still inside the throttle window
     CHECK_EQ(calls, 0);
     t.c.flushChanges();
     CHECK_EQ(calls, 1);
-    CHECK(seen.count(t.a));
+    CHECK(seen.nodes.count(t.a));
     t.c.flushChanges();  // nothing pending
     CHECK_EQ(calls, 1);
+}
+
+TEST(canvas_change_sets_are_as_small_as_possible) {
+    Tree t;
+    t.c.discardPendingChanges();
+    Canvas::ChangeSet seen;
+    t.c.onChanged([&](const Canvas::ChangeSet& changes) { seen = changes; });
+
+    // A new box touches only itself and its parent: no config rewrite.
+    const std::string n = t.c.createNode("", {1, 1, 5, 5}, "n", t.sib);
+    t.c.flushChanges();
+    CHECK(!seen.config && !seen.full);
+    CHECK(seen.nodes.count(n) && seen.nodes.count(t.sib));
+
+    // Deleting reports the removed files and, if links went, the config.
+    t.c.createConnection(n, t.b);
+    t.c.flushChanges();
+    CHECK(seen.config);
+    t.c.removeSubtree(t.sib);
+    t.c.flushChanges();
+    CHECK(seen.removed.count(t.sib) && seen.removed.count(n));
+    CHECK(!seen.nodes.count(n));
+    CHECK(seen.config);
 }
 
 TEST(node_auto_resize_measures_characters_not_bytes) {

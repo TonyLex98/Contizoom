@@ -112,30 +112,42 @@ public:
     const std::map<std::string, std::shared_ptr<Connection>>& allConnections() const { return connections_; }
 
     // ---- Change tracking (auto-save) ---------------------------------
-    // The callback receives the uuids of nodes whose own data changed and
-    // whether canvas-level data (viewport, node set, connections) changed.
-    // It fires from processPendingChanges() once edits have settled for the
-    // throttle delay, or immediately from flushChanges().
-    using ChangedCallback = std::function<void(const std::set<std::string>& changedUuids, bool canvasChanged)>;
+    // Edits are recorded at the granularity storage needs, so an auto-save
+    // writes as little as possible: one file per changed node, a deletion
+    // per removed node, config.json only for viewport/name/connection
+    // changes, and a full rewrite only after wholesale replacement (undo,
+    // load). The callback fires from processPendingChanges() once edits have
+    // settled for the throttle delay, or immediately from flushChanges().
+    struct ChangeSet {
+        std::set<std::string> nodes;    // node data changed (or node created)
+        std::set<std::string> removed;  // node deleted
+        bool config = false;            // viewport, name or connections changed
+        bool full = false;              // everything may have changed
+
+        bool empty() const { return nodes.empty() && removed.empty() && !config && !full; }
+    };
+    using ChangedCallback = std::function<void(const ChangeSet&)>;
     void onChanged(ChangedCallback cb) { changed_ = std::move(cb); }
 
     void markChanged(const std::string& uuid);
-    void markCanvasChanged();
-    bool hasPendingChanges() const { return canvasChanged_ || !changedNodes_.empty(); }
+    void markRemoved(const std::string& uuid);
+    void markConfigChanged();
+    void markAllChanged();
+    bool hasPendingChanges() const { return !pending_.empty(); }
     void processPendingChanges();
     void flushChanges();
-    void discardPendingChanges() {
-        changedNodes_.clear();
-        canvasChanged_ = false;
-    }
+    void discardPendingChanges() { pending_ = ChangeSet{}; }
+
+    // Replaces nodes and connections wholesale (undo/redo); the viewport is
+    // kept. Marks everything changed.
+    void replaceContent(std::vector<std::shared_ptr<Node>> nodes, std::vector<std::shared_ptr<Connection>> connections);
 
 private:
     std::map<std::string, std::shared_ptr<Node>> nodes_;
     std::map<std::string, std::shared_ptr<Connection>> connections_;
 
     ChangedCallback changed_;
-    std::set<std::string> changedNodes_;
-    bool canvasChanged_ = false;
+    ChangeSet pending_;
     std::chrono::steady_clock::time_point lastChangeTime_;
     std::chrono::milliseconds throttleDelay_{500};
 

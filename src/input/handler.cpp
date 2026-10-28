@@ -32,8 +32,17 @@ std::string joinLines(const std::vector<std::string>& lines) {
     return out;
 }
 
-bool isLetterKey(const InputEvent& e, char upper) {
-    return e.key == upper;
+// Style cycle for T: arrows first, then plain lines.
+ConnType nextStyle(ConnType t) {
+    switch (t) {
+        case ConnType::Arrow: return ConnType::DashedArrow;
+        case ConnType::DashedArrow: return ConnType::DottedArrow;
+        case ConnType::DottedArrow: return ConnType::Line;
+        case ConnType::Line: return ConnType::DashedLine;
+        case ConnType::DashedLine: return ConnType::DottedLine;
+        case ConnType::DottedLine: return ConnType::Arrow;
+    }
+    return ConnType::Arrow;
 }
 
 }  // namespace
@@ -41,10 +50,12 @@ bool isLetterKey(const InputEvent& e, char upper) {
 InputHandler::InputHandler(Canvas& canvas, UiState& ui) : canvas_(canvas), ui_(ui) {}
 
 void InputHandler::setLayout(const std::map<std::string, ScreenRect>& screenRects,
-                             const std::map<std::string, ScreenRect>& sidebarRects, const CanvasArea& area) {
+                             const std::map<std::string, ScreenRect>& sidebarRects, const CanvasArea& area,
+                             const ScreenRect& editorRect) {
     screenRects_ = screenRects;
     sidebarRects_ = sidebarRects;
     area_ = area;
+    editorRect_ = editorRect;
 }
 
 InputResult InputHandler::process(const InputEvent& e) {
@@ -60,6 +71,22 @@ InputResult InputHandler::process(const InputEvent& e) {
         case InputType::Resize: break;
     }
     return InputResult::NotHandled;
+}
+
+// ====================================================================
+// Undo
+// ====================================================================
+
+void InputHandler::edit(const std::function<void()>& change) {
+    const std::string before = history_.snapshot(canvas_);
+    change();
+    history_.record(before, canvas_);
+}
+
+void InputHandler::afterContentReplaced() {
+    ui_.nodeEditor = NodeEditor{};
+    ui_.connEditor = ConnectionEditor{};
+    ui_.prune(canvas_);
 }
 
 // ====================================================================
@@ -109,12 +136,17 @@ std::shared_ptr<Node> InputHandler::nodeAt(int x, int y) const {
     return best;
 }
 
+// A connection whose drawn route passes through (x, y). Lines are drawn
+// over boxes, so a visible line wins over the box beneath it. The end
+// cells belong to the boxes' borders and don't count.
 std::string InputHandler::connectionAt(int x, int y) const {
     for (const auto& [uuid, conn] : canvas_.allConnections()) {
         auto from = screenRects_.find(conn->fromUuid);
         auto to = screenRects_.find(conn->toUuid);
         if (from == screenRects_.end() || to == screenRects_.end()) continue;
-        if (distanceToPath(routeConnection(from->second, to->second, *conn), x, y) <= 0.75) return uuid;
+        const CellPath path = routeConnection(from->second, to->second, *conn);
+        if (path.empty() || std::make_pair(x, y) == path.front() || std::make_pair(x, y) == path.back()) continue;
+        if (distanceToPath(path, x, y) <= 0.5) return uuid;
     }
     return {};
 }
@@ -132,15 +164,18 @@ ResizeCorner InputHandler::resizeCornerAt(int x, int y, std::string& uuid) const
     return ResizeCorner::None;
 }
 
-Anchor InputHandler::anchorAt(int x, int y, std::string& uuid) const {
-    // Innermost box first so a child's anchor wins over its parent's.
+// Anchors only count where they're visible (see UiState::showsAnchors),
+// plus on the box under the mouse; `anyBox` while dragging a connection.
+Anchor InputHandler::anchorAt(int x, int y, std::string& uuid, bool anyBox) const {
+    const auto under = nodeAt(x, y);
     std::shared_ptr<Node> best;
     Anchor bestAnchor;
     for (const auto& [id, sr] : screenRects_) {
+        if (!anyBox && !ui_.showsAnchors(id) && !(under && under->uuid == id)) continue;
         const Anchor a = ic::anchorAt(sr, x, y);
         if (!a.valid()) continue;
         auto node = canvas_.getNode(id);
-        if (node && (!best || node->depth > best->depth)) {
+        if (node && (!best || node->depth > best->depth)) {  // a child's anchor wins over its parent's
             best = node;
             bestAnchor = a;
         }
@@ -161,7 +196,7 @@ void InputHandler::updateHover(int x, int y) {
     ui_.cornerHover = resizeCornerAt(x, y, ui_.cornerHoverNode);
     if (ui_.cornerHover == ResizeCorner::None) ui_.cornerHoverNode.clear();
 
-    ui_.anchorHover = anchorAt(x, y, ui_.anchorHoverNode);
+    ui_.anchorHover = anchorAt(x, y, ui_.anchorHoverNode, gesture_ == Gesture::Connect);
     if (!ui_.anchorHover.valid()) ui_.anchorHoverNode.clear();
 }
 
@@ -180,54 +215,213 @@ InputResult InputHandler::onKey(const InputEvent& e) {
     }
 
     if (e.mods.ctrl) {
-        if (isLetterKey(e, 'Q')) return InputResult::RequestQuit;
-        if (isLetterKey(e, 'S')) return InputResult::RequestSave;
-        if (isLetterKey(e, 'N')) return InputResult::RequestNew;
-        return InputResult::NotHandled;
+        switch (e.key) {
+            case 'Q': return InputResult::RequestQuit;
+            case 'S': return InputResult::RequestSave;
+            case 'N': return InputResult::RequestNew;
+            case 'Z': perform(e.mods.shift ? Action::Redo : Action::Undo); return InputResult::Handled;
+            case 'Y': perform(Action::Redo); return InputResult::Handled;
+            default: return InputResult::NotHandled;
+        }
+    }
+
+    // A selected connection takes its own keys.
+    if (!ui_.selectedConnection.empty()) {
+        switch (e.key) {
+            case 'T': perform(Action::ConnectionNextStyle); return InputResult::Handled;
+            case 'V': perform(Action::ConnectionReverse); return InputResult::Handled;
+            case key::Enter:
+            case key::F2:
+            case 'R': perform(Action::ConnectionRename); return InputResult::Handled;
+            case 'X':
+            case key::Delete: perform(Action::ConnectionDelete); return InputResult::Handled;
+            default: break;
+        }
     }
 
     // Camera.
-    if (e.key == key::Up || isLetterKey(e, 'W') || isLetterKey(e, 'K')) pan(0, -kPanCells);
-    else if (e.key == key::Down || isLetterKey(e, 'S') || isLetterKey(e, 'J')) pan(0, kPanCells);
-    else if (e.key == key::Left || isLetterKey(e, 'A') || isLetterKey(e, 'H')) pan(-kPanCells, 0);
-    else if (e.key == key::Right || isLetterKey(e, 'D') || isLetterKey(e, 'L')) pan(kPanCells, 0);
+    if (e.key == key::Up || e.key == 'W' || e.key == 'K') pan(0, -kPanCells);
+    else if (e.key == key::Down || e.key == 'S' || e.key == 'J') pan(0, kPanCells);
+    else if (e.key == key::Left || e.key == 'A' || e.key == 'H') pan(-kPanCells, 0);
+    else if (e.key == key::Right || e.key == 'D' || e.key == 'L') pan(kPanCells, 0);
     else if (e.ch == U'+' || e.ch == U'=' || e.key == key::Add || e.key == key::OemPlus)
         zoomAt(kZoomStep, area_.centerX(), area_.centerY());
     else if (e.ch == U'-' || e.key == key::Subtract || e.key == key::OemMinus)
         zoomAt(1.0 / kZoomStep, area_.centerX(), area_.centerY());
     else if (e.ch == U']') zoomAt(2.0, area_.centerX(), area_.centerY());
     else if (e.ch == U'[') zoomAt(0.5, area_.centerX(), area_.centerY());
-    else if (isLetterKey(e, '0') || e.key == key::Home) fitAll();
-    else if (e.key == key::Enter) {
-        if (!ui_.selected.empty()) zoomToNode(*ui_.selected.begin());
-    }
+    else if (e.key == '0' || e.key == key::Home) perform(Action::FitAll);
+    else if (e.key == key::Enter) perform(Action::ZoomTo);
 
     // Editing.
     else if (e.key == key::Escape) {
         ui_.clearSelection();
         ui_.connectionSource.clear();
+        ui_.connectPreview = false;
         if (gesture_ == Gesture::Connect || gesture_ == Gesture::AreaSelect) gesture_ = Gesture::None;
         ui_.area.clear();
-    } else if (isLetterKey(e, 'N')) createNode();
-    else if (isLetterKey(e, 'R')) {
-        if (!ui_.selected.empty()) startEditing(*ui_.selected.begin(), true);
-    } else if (isLetterKey(e, 'E')) {
-        if (!ui_.selected.empty()) startEditing(*ui_.selected.begin(), false);
-    } else if (isLetterKey(e, 'X') || e.key == key::Delete) {
-        if (!ui_.selectedConnection.empty()) {
-            canvas_.removeConnection(ui_.selectedConnection);
-            ui_.selectedConnection.clear();
-        } else {
-            deleteSelection();
-        }
-    } else if (isLetterKey(e, 'F')) frameSelection();
-    else if (e.key == key::Tab) {
-        if (e.mods.shift) demoteSelection();
-        else promoteSelection();
-    } else {
-        return InputResult::NotHandled;
-    }
+    } else if (e.key == 'N') perform(Action::NewBox);
+    else if (e.key == 'R' || e.key == key::F2) perform(Action::Rename);
+    else if (e.key == 'E') perform(Action::EditText);
+    else if (e.key == 'X' || e.key == key::Delete) perform(Action::Delete);
+    else if (e.key == 'F') perform(Action::Frame);
+    else if (e.key == key::Tab) perform(e.mods.shift ? Action::Demote : Action::Promote);
+    else return InputResult::NotHandled;
     return InputResult::Handled;
+}
+
+// ====================================================================
+// Actions
+// ====================================================================
+
+void InputHandler::perform(Action action) {
+    const std::string first = ui_.selected.empty() ? std::string() : *ui_.selected.begin();
+    auto conn = canvas_.getConnection(ui_.selectedConnection);
+
+    switch (action) {
+        case Action::NewBox: createBox(); break;
+        case Action::EditText:
+            if (!first.empty()) startEditing(first, false);
+            break;
+        case Action::Rename:
+            if (!first.empty()) startEditing(first, true);
+            break;
+        case Action::Delete:
+            if (conn) {
+                perform(Action::ConnectionDelete);
+                break;
+            }
+            edit([&] {
+                for (const auto& uuid : topLevelSelection()) canvas_.removeSubtree(uuid);
+            });
+            ui_.prune(canvas_);
+            break;
+        case Action::Frame: {
+            const auto members = topLevelSelection();
+            if (members.empty()) break;
+            std::string frame;
+            edit([&] { frame = canvas_.createFrame(members, "Frame"); });
+            if (!frame.empty()) select(frame, false);
+            break;
+        }
+        case Action::Promote:
+            edit([&] {
+                for (const auto& uuid : topLevelSelection()) canvas_.promoteNode(uuid);
+            });
+            break;
+        case Action::Demote:
+            edit([&] {
+                for (const auto& uuid : topLevelSelection()) canvas_.demoteNode(uuid);
+            });
+            break;
+        case Action::ZoomTo:
+            if (!first.empty()) zoomToNode(first);
+            break;
+        case Action::FitAll: fitAll(); break;
+
+        case Action::ConnectionRename:
+            if (conn) {
+                const auto [x, y] = connectionLabelCell(conn->uuid);
+                startConnectionEdit(conn->uuid, x, y);
+            }
+            break;
+        case Action::ConnectionReverse:
+            if (conn) {
+                edit([&] {
+                    std::swap(conn->fromUuid, conn->toUuid);
+                    std::swap(conn->fromAnchor, conn->toAnchor);
+                    canvas_.markConfigChanged();
+                });
+            }
+            break;
+        case Action::ConnectionNextStyle:
+            if (conn) setConnectionStyle(nextStyle(conn->type));
+            break;
+        case Action::ConnectionDelete:
+            if (conn) {
+                edit([&] { canvas_.removeConnection(conn->uuid); });
+                ui_.selectedConnection.clear();
+            }
+            break;
+
+        case Action::Undo:
+            if (history_.undo(canvas_)) afterContentReplaced();
+            break;
+        case Action::Redo:
+            if (history_.redo(canvas_)) afterContentReplaced();
+            break;
+    }
+}
+
+void InputHandler::setConnectionStyle(ConnType type) {
+    auto conn = canvas_.getConnection(ui_.selectedConnection);
+    if (!conn || conn->type == type) return;
+    edit([&] {
+        conn->type = type;
+        canvas_.markConfigChanged();
+    });
+}
+
+void InputHandler::select(const std::string& uuid, bool additive) {
+    if (!additive) ui_.selected.clear();
+    ui_.selectedConnection.clear();
+    if (canvas_.getNode(uuid)) ui_.selected.insert(uuid);
+}
+
+void InputHandler::selectConnection(const std::string& uuid) {
+    ui_.selected.clear();
+    ui_.selectedConnection = uuid;
+}
+
+// Selected nodes without a selected ancestor. Moving or deleting a parent
+// already covers its subtree; acting on both would apply it twice.
+std::vector<std::string> InputHandler::topLevelSelection() const {
+    std::vector<std::string> result;
+    for (const auto& uuid : ui_.selected) {
+        auto node = canvas_.getNode(uuid);
+        if (!node) continue;
+        bool covered = false;
+        for (std::string p = node->parentId; !p.empty() && !covered;) {
+            covered = ui_.isSelected(p);
+            auto parent = canvas_.getNode(p);
+            p = parent ? parent->parentId : std::string();
+        }
+        if (!covered) result.push_back(uuid);
+    }
+    return result;
+}
+
+void InputHandler::createBox() {
+    std::string parentId = ui_.selected.size() == 1 ? *ui_.selected.begin() : std::string();
+    if (parentId.empty()) parentId = ui_.hovered;
+    auto parent = canvas_.getNode(parentId);
+
+    Rect r{0, 0, 20, 4};
+    if (parent) {
+        // Below the parent's existing content.
+        double y = 3.0;
+        for (const auto& cid : parent->childrenUuids) {
+            if (auto c = canvas_.getNode(cid)) y = std::max(y, c->rect.bottom() + 2.0);
+        }
+        r.x = 3.0;
+        r.y = y;
+    } else {
+        parentId.clear();
+        r.x = toWorldX(area_.centerX()) - r.width / 2;
+        r.y = toWorldY(area_.centerY()) - r.height / 2;
+    }
+
+    std::string uuid;
+    edit([&] {
+        uuid = canvas_.createNode("", r, "New box", parentId);
+        if (!uuid.empty() && !parentId.empty()) {
+            canvas_.expandParentToFit(uuid, 2.0);
+            canvas_.resolveOverlaps(parentId);
+        }
+    });
+    if (uuid.empty()) return;
+    select(uuid, false);
+    startEditing(uuid, true);
 }
 
 // ====================================================================
@@ -240,6 +434,21 @@ InputResult InputHandler::onMouseDown(const InputEvent& e) {
     if (e.button == MouseButton::Right) {
         if (ui_.nodeEditor.active) commitEdit();
         if (ui_.connEditor.active) commitConnectionEdit();
+        // Context: a connection line, a box, or empty canvas.
+        context_ = ContextTarget{};
+        context_.x = x;
+        context_.y = y;
+        if (area_.contains(x, y)) {
+            if (std::string conn = connectionAt(x, y); !conn.empty()) {
+                context_.kind = ContextTarget::Kind::Connection;
+                context_.uuid = conn;
+                selectConnection(conn);
+            } else if (auto node = nodeAt(x, y)) {
+                context_.kind = ContextTarget::Kind::Node;
+                context_.uuid = node->uuid;
+                if (!ui_.isSelected(node->uuid)) select(node->uuid, false);
+            }
+        }
         return InputResult::RequestMenu;
     }
     if (e.button != MouseButton::Left) return InputResult::NotHandled;
@@ -249,8 +458,7 @@ InputResult InputHandler::onMouseDown(const InputEvent& e) {
         const CellBox b = cellBox(sr);
         if (y == b.y && x >= b.x && x <= b.right()) {
             sidebarClicked_ = uuid;
-            ui_.selected = {uuid};
-            ui_.selectedConnection.clear();
+            select(uuid, false);
             return InputResult::SidebarNodeClick;
         }
     }
@@ -258,80 +466,90 @@ InputResult InputHandler::onMouseDown(const InputEvent& e) {
 
     const uint64_t now = clock::monotonicMillis();
     auto node = nodeAt(x, y);
-    const std::string target = node ? node->uuid : connectionAt(x, y);
+    const std::string conn = connectionAt(x, y);
+    const std::string target = !conn.empty() ? conn : node ? node->uuid : std::string();
     const bool doubleClick = isDoubleClick(target, x, y, now);
     lastClickTarget_ = target;
     lastClickTime_ = doubleClick ? 0 : now;  // a third click starts over
     lastClickX_ = x;
     lastClickY_ = y;
 
-    // A click inside the box being edited keeps editing.
-    if (ui_.nodeEditor.active && node && node->uuid == ui_.nodeEditor.nodeUuid) return InputResult::Handled;
+    // A click inside the editor keeps editing; anywhere else saves it.
+    if (ui_.nodeEditor.active && editorRect_.valid()) {
+        const CellBox eb = cellBox(editorRect_);
+        if (x >= eb.x && x <= eb.right() && y >= eb.y && y <= eb.bottom()) return InputResult::Handled;
+    }
     if (ui_.nodeEditor.active) commitEdit();
     if (ui_.connEditor.active) commitConnectionEdit();
 
     pressX_ = lastX_ = x;
     pressY_ = lastY_ = y;
+    gesture_ = Gesture::None;
 
-    // Double-click: edit the name on the header row, the text elsewhere.
-    if (doubleClick && node) {
-        select(node->uuid, false);
-        auto sr = screenRects_.find(node->uuid);
-        const bool onHeader = sr != screenRects_.end() && y == cellBox(sr->second).y;
-        startEditing(node->uuid, onHeader);
-        gesture_ = Gesture::None;
-        return InputResult::Handled;
+    // Double-click: a line's label, or a box's name (header row) / text.
+    if (doubleClick) {
+        if (!conn.empty()) {
+            selectConnection(conn);
+            startConnectionEdit(conn, x, y);
+            return InputResult::Handled;
+        }
+        if (node) {
+            select(node->uuid, false);
+            auto sr = screenRects_.find(node->uuid);
+            const bool onHeader = sr != screenRects_.end() && y == cellBox(sr->second).y;
+            startEditing(node->uuid, onHeader);
+            return InputResult::Handled;
+        }
     }
 
     // Corner of a selected box: resize.
     std::string cornerNode;
-    const ResizeCorner corner = resizeCornerAt(x, y, cornerNode);
-    if (corner != ResizeCorner::None) {
+    if (const ResizeCorner corner = resizeCornerAt(x, y, cornerNode); corner != ResizeCorner::None) {
         beginResize(cornerNode, corner);
         if (gesture_ == Gesture::Resize) return InputResult::Handled;
     }
 
-    // Anchor point (or Ctrl+click a box): drag to another box to connect.
+    // Anchor point (or Ctrl+drag a box): drag to another box to connect.
     std::string anchorNode;
-    const Anchor anchor = anchorAt(x, y, anchorNode);
+    const Anchor anchor = anchorAt(x, y, anchorNode, false);
     if (anchor.valid() || (e.mods.ctrl && node)) {
         ui_.connectionSource = anchor.valid() ? anchorNode : node->uuid;
         connectFromAnchor_ = anchor;
+        ui_.connectPreview = true;
+        ui_.previewX = x;
+        ui_.previewY = y;
+        ui_.previewFromAnchor = anchor;
         gesture_ = Gesture::Connect;
         return InputResult::Handled;
     }
 
+    if (!conn.empty()) {
+        selectConnection(conn);
+        return InputResult::Handled;
+    }
+
     if (node) {
-        ui_.selectedConnection.clear();
         pressNode_ = node->uuid;
-        pressWasSelected_ = ui_.isSelected(node->uuid);
+        ui_.selectedConnection.clear();
         if (e.mods.shift) {
             // Shift+click toggles membership in the selection.
-            if (pressWasSelected_) ui_.selected.erase(node->uuid);
+            if (ui_.isSelected(node->uuid)) ui_.selected.erase(node->uuid);
             else ui_.selected.insert(node->uuid);
-            gesture_ = Gesture::None;
         } else {
-            if (!pressWasSelected_) select(node->uuid, false);
-            gesture_ = Gesture::PendingClick;
+            if (!ui_.isSelected(node->uuid)) select(node->uuid, false);
+            gesture_ = Gesture::PendingClick;  // becomes a drag if the mouse moves
         }
         return InputResult::Handled;
     }
 
-    // Empty canvas (or a connection line).
+    // Empty canvas.
     if (e.mods.shift) {
         ui_.area.begin(toWorldX(x), toWorldY(y));
         gesture_ = Gesture::AreaSelect;
         return InputResult::Handled;
     }
-    ui_.selected.clear();
-    ui_.selectedConnection.clear();
-    if (!target.empty()) {
-        ui_.selectedConnection = target;
-        if (doubleClick) startConnectionEdit(target, x, y);
-        gesture_ = Gesture::None;
-    } else {
-        gesture_ = Gesture::Pan;
-    }
+    ui_.clearSelection();
+    gesture_ = Gesture::Pan;
     return InputResult::Handled;
 }
 
@@ -344,6 +562,8 @@ InputResult InputHandler::onMouseMove(const InputEvent& e) {
             break;
 
         case Gesture::Connect:
+            ui_.previewX = x;
+            ui_.previewY = y;
             updateHover(x, y);
             break;
 
@@ -385,15 +605,6 @@ InputResult InputHandler::onMouseUp(const InputEvent& e) {
     const int x = e.mouseX, y = e.mouseY;
 
     switch (gesture_) {
-        case Gesture::PendingClick:
-            // A plain click on a box that was already selected edits it.
-            if (pressWasSelected_) {
-                auto sr = screenRects_.find(pressNode_);
-                const bool onHeader = sr != screenRects_.end() && y == cellBox(sr->second).y;
-                startEditing(pressNode_, onHeader);
-            }
-            break;
-
         case Gesture::DragNodes: {
             std::set<std::string> parents;
             for (const auto& [uuid, _] : drag_) {
@@ -403,44 +614,24 @@ InputResult InputHandler::onMouseUp(const InputEvent& e) {
                 }
             }
             for (const auto& p : parents) canvas_.resolveOverlaps(p);
+            history_.record(gestureSnapshot_, canvas_);
             drag_.clear();
             break;
         }
 
-        case Gesture::Resize: {
+        case Gesture::Resize:
             if (auto n = canvas_.getNode(resize_.uuid)) {
                 canvas_.markChanged(n->uuid);
                 if (!n->parentId.empty()) canvas_.resolveOverlaps(n->parentId);
             }
+            history_.record(gestureSnapshot_, canvas_);
             resize_ = ResizeStart{};
             break;
-        }
 
-        case Gesture::Connect: {
-            auto target = nodeAt(x, y);
-            if (target && target->uuid != ui_.connectionSource) {
-                std::string anchorNode;
-                const Anchor toAnchor = anchorAt(x, y, anchorNode);
-                const std::string id = canvas_.createConnection(ui_.connectionSource, target->uuid);
-                if (auto conn = canvas_.getConnection(id)) {
-                    conn->fromAnchor = connectFromAnchor_;
-                    if (toAnchor.valid() && anchorNode == target->uuid) conn->toAnchor = toAnchor;
-                    ui_.selectedConnection = id;
-                }
-            }
-            ui_.connectionSource.clear();
-            connectFromAnchor_ = Anchor{};
-            break;
-        }
-
-        case Gesture::AreaSelect:
-            finishAreaSelect();
-            break;
-
-        case Gesture::Pan:
-            canvas_.markCanvasChanged();
-            break;
-
+        case Gesture::Connect: finishConnect(x, y); break;
+        case Gesture::AreaSelect: finishAreaSelect(); break;
+        case Gesture::Pan: canvas_.markConfigChanged(); break;
+        case Gesture::PendingClick:  // a plain click only selects; editing is a double-click
         case Gesture::None: break;
     }
     gesture_ = Gesture::None;
@@ -455,92 +646,11 @@ InputResult InputHandler::onScroll(const InputEvent& e) {
 }
 
 // ====================================================================
-// Camera
+// Gestures
 // ====================================================================
-
-void InputHandler::pan(double cellsX, double cellsY) {
-    canvas_.viewport.centerX += cellsX / canvas_.viewport.scale;
-    canvas_.viewport.centerY += cellsY / canvas_.viewport.scale;
-    canvas_.markCanvasChanged();
-}
-
-// Zooms keeping the world point under (sx, sy) fixed on screen.
-void InputHandler::zoomAt(double factor, double sx, double sy) {
-    Viewport& vp = canvas_.viewport;
-    const double newScale = std::clamp(vp.scale * factor, Viewport::kMinScale, Viewport::kMaxScale);
-    if (newScale == vp.scale) return;
-    const double wx = toWorldX(sx), wy = toWorldY(sy);
-    vp.scale = newScale;
-    vp.centerX = wx - (sx - area_.centerX()) / newScale;
-    vp.centerY = wy - (sy - area_.centerY()) / newScale;
-    canvas_.markCanvasChanged();
-}
-
-void InputHandler::zoomToNode(const std::string& uuid) {
-    if (!canvas_.getNode(uuid)) return;
-    const Rect r = canvas_.computeWorldRect(uuid);
-    Viewport& vp = canvas_.viewport;
-    vp.centerX = r.centerX();
-    vp.centerY = r.centerY();
-    const double sx = area_.width() * 0.8 / std::max(1e-9, r.width);
-    const double sy = area_.height() * 0.8 / std::max(1e-9, r.height);
-    vp.scale = std::clamp(std::min(sx, sy), Viewport::kMinScale, Viewport::kMaxScale);
-    canvas_.markCanvasChanged();
-}
-
-void InputHandler::fitAll() {
-    const auto roots = canvas_.getChildren("");
-    Viewport& vp = canvas_.viewport;
-    if (roots.empty()) {
-        vp = Viewport{};
-        canvas_.markCanvasChanged();
-        return;
-    }
-    double x0 = roots.front()->rect.left(), y0 = roots.front()->rect.top();
-    double x1 = roots.front()->rect.right(), y1 = roots.front()->rect.bottom();
-    for (const auto& r : roots) {
-        x0 = std::min(x0, r->rect.left());
-        y0 = std::min(y0, r->rect.top());
-        x1 = std::max(x1, r->rect.right());
-        y1 = std::max(y1, r->rect.bottom());
-    }
-    vp.centerX = (x0 + x1) / 2;
-    vp.centerY = (y0 + y1) / 2;
-    const double sx = area_.width() * 0.9 / std::max(1e-9, x1 - x0);
-    const double sy = area_.height() * 0.9 / std::max(1e-9, y1 - y0);
-    vp.scale = std::clamp(std::min(sx, sy), Viewport::kMinScale, Viewport::kMaxScale);
-    canvas_.markCanvasChanged();
-}
-
-// ====================================================================
-// Actions
-// ====================================================================
-
-void InputHandler::select(const std::string& uuid, bool additive) {
-    if (!additive) ui_.selected.clear();
-    ui_.selectedConnection.clear();
-    if (canvas_.getNode(uuid)) ui_.selected.insert(uuid);
-}
-
-// Selected nodes without a selected ancestor. Moving or deleting a parent
-// already covers its subtree; acting on both would apply it twice.
-std::vector<std::string> InputHandler::topLevelSelection() const {
-    std::vector<std::string> result;
-    for (const auto& uuid : ui_.selected) {
-        auto node = canvas_.getNode(uuid);
-        if (!node) continue;
-        bool covered = false;
-        for (std::string p = node->parentId; !p.empty() && !covered;) {
-            covered = ui_.isSelected(p);
-            auto parent = canvas_.getNode(p);
-            p = parent ? parent->parentId : std::string();
-        }
-        if (!covered) result.push_back(uuid);
-    }
-    return result;
-}
 
 void InputHandler::beginDrag() {
+    gestureSnapshot_ = history_.snapshot(canvas_);
     drag_.clear();
     for (const auto& uuid : topLevelSelection()) {
         auto node = canvas_.getNode(uuid);
@@ -575,6 +685,7 @@ void InputHandler::beginResize(const std::string& uuid, ResizeCorner corner) {
         r.minH = std::max(r.minH, r.rect.height * fy);
         for (const auto& d : canvas_.getDescendants(uuid)) r.descendants[d->uuid] = d->rect;
     }
+    gestureSnapshot_ = history_.snapshot(canvas_);
     resize_ = r;
     gesture_ = Gesture::Resize;
 }
@@ -618,9 +729,39 @@ void InputHandler::updateResize(int x, int y) {
     canvas_.markChanged(resize_.uuid);
 }
 
+void InputHandler::finishConnect(int x, int y) {
+    const std::string source = ui_.connectionSource;
+    ui_.connectionSource.clear();
+    ui_.connectPreview = false;
+
+    auto target = nodeAt(x, y);
+    if (!target || target->uuid == source || !canvas_.getNode(source)) return;
+
+    // The same link twice is almost always a slip: select the existing one.
+    for (const auto& [id, c] : canvas_.allConnections()) {
+        if (c->fromUuid == source && c->toUuid == target->uuid) {
+            selectConnection(id);
+            return;
+        }
+    }
+
+    std::string anchorNode;
+    const Anchor toAnchor = anchorAt(x, y, anchorNode, true);
+    std::string id;
+    edit([&] {
+        id = canvas_.createConnection(source, target->uuid);
+        if (auto conn = canvas_.getConnection(id)) {
+            conn->fromAnchor = connectFromAnchor_;
+            if (toAnchor.valid() && anchorNode == target->uuid) conn->toAnchor = toAnchor;
+        }
+    });
+    if (!id.empty()) selectConnection(id);
+    connectFromAnchor_ = Anchor{};
+}
+
 void InputHandler::finishAreaSelect() {
     const AreaSelection& a = ui_.area;
-    ui_.selected.clear();
+    ui_.clearSelection();
     for (const auto& [uuid, _] : screenRects_) {  // only what's actually visible
         const Rect w = canvas_.computeWorldRect(uuid);
         if (w.right() > a.left() && w.left() < a.right() && w.bottom() > a.top() && w.top() < a.bottom())
@@ -629,54 +770,76 @@ void InputHandler::finishAreaSelect() {
     ui_.area.clear();
 }
 
-void InputHandler::createNode() {
-    std::string parentId = ui_.selected.size() == 1 ? *ui_.selected.begin() : std::string();
-    if (parentId.empty()) parentId = ui_.hovered;
-    auto parent = canvas_.getNode(parentId);
-
-    Rect r{0, 0, 20, 4};
-    if (parent) {
-        // Below the parent's existing content.
-        double y = 3.0;
-        for (const auto& cid : parent->childrenUuids) {
-            if (auto c = canvas_.getNode(cid)) y = std::max(y, c->rect.bottom() + 2.0);
+// Where a connection's label sits on screen (for the rename field).
+std::pair<int, int> InputHandler::connectionLabelCell(const std::string& connUuid) const {
+    auto conn = canvas_.getConnection(connUuid);
+    if (conn) {
+        auto from = screenRects_.find(conn->fromUuid);
+        auto to = screenRects_.find(conn->toUuid);
+        if (from != screenRects_.end() && to != screenRects_.end()) {
+            const CellPath p = routeConnection(from->second, to->second, *conn);
+            if (!p.empty()) return p[p.size() / 2];
         }
-        r.x = 3.0;
-        r.y = y;
-    } else {
-        parentId.clear();
-        r.x = toWorldX(area_.centerX()) - r.width / 2;
-        r.y = toWorldY(area_.centerY()) - r.height / 2;
     }
+    return {context_.x, context_.y};
+}
 
-    const std::string uuid = canvas_.createNode("", r, "New box", parentId);
-    if (uuid.empty()) return;
-    if (!parentId.empty()) {
-        canvas_.expandParentToFit(uuid, 2.0);
-        canvas_.resolveOverlaps(parentId);
+// ====================================================================
+// Camera
+// ====================================================================
+
+void InputHandler::pan(double cellsX, double cellsY) {
+    canvas_.viewport.centerX += cellsX / canvas_.viewport.scale;
+    canvas_.viewport.centerY += cellsY / canvas_.viewport.scale;
+    canvas_.markConfigChanged();
+}
+
+// Zooms keeping the world point under (sx, sy) fixed on screen.
+void InputHandler::zoomAt(double factor, double sx, double sy) {
+    Viewport& vp = canvas_.viewport;
+    const double newScale = std::clamp(vp.scale * factor, Viewport::kMinScale, Viewport::kMaxScale);
+    if (newScale == vp.scale) return;
+    const double wx = toWorldX(sx), wy = toWorldY(sy);
+    vp.scale = newScale;
+    vp.centerX = wx - (sx - area_.centerX()) / newScale;
+    vp.centerY = wy - (sy - area_.centerY()) / newScale;
+    canvas_.markConfigChanged();
+}
+
+void InputHandler::zoomToNode(const std::string& uuid) {
+    if (!canvas_.getNode(uuid)) return;
+    const Rect r = canvas_.computeWorldRect(uuid);
+    Viewport& vp = canvas_.viewport;
+    vp.centerX = r.centerX();
+    vp.centerY = r.centerY();
+    const double sx = area_.width() * 0.8 / std::max(1e-9, r.width);
+    const double sy = area_.height() * 0.8 / std::max(1e-9, r.height);
+    vp.scale = std::clamp(std::min(sx, sy), Viewport::kMinScale, Viewport::kMaxScale);
+    canvas_.markConfigChanged();
+}
+
+void InputHandler::fitAll() {
+    const auto roots = canvas_.getChildren("");
+    Viewport& vp = canvas_.viewport;
+    if (roots.empty()) {
+        vp = Viewport{};
+        canvas_.markConfigChanged();
+        return;
     }
-    select(uuid, false);
-    startEditing(uuid, true);
-}
-
-void InputHandler::deleteSelection() {
-    for (const auto& uuid : topLevelSelection()) canvas_.removeSubtree(uuid);
-    ui_.prune(canvas_);
-}
-
-void InputHandler::promoteSelection() {
-    for (const auto& uuid : topLevelSelection()) canvas_.promoteNode(uuid);
-}
-
-void InputHandler::demoteSelection() {
-    for (const auto& uuid : topLevelSelection()) canvas_.demoteNode(uuid);
-}
-
-void InputHandler::frameSelection() {
-    const auto members = topLevelSelection();
-    if (members.empty()) return;
-    const std::string frame = canvas_.createFrame(members, "Frame");
-    if (!frame.empty()) select(frame, false);
+    double x0 = roots.front()->rect.left(), y0 = roots.front()->rect.top();
+    double x1 = roots.front()->rect.right(), y1 = roots.front()->rect.bottom();
+    for (const auto& r : roots) {
+        x0 = std::min(x0, r->rect.left());
+        y0 = std::min(y0, r->rect.top());
+        x1 = std::max(x1, r->rect.right());
+        y1 = std::max(y1, r->rect.bottom());
+    }
+    vp.centerX = (x0 + x1) / 2;
+    vp.centerY = (y0 + y1) / 2;
+    const double sx = area_.width() * 0.9 / std::max(1e-9, x1 - x0);
+    const double sy = area_.height() * 0.9 / std::max(1e-9, y1 - y0);
+    vp.scale = std::clamp(std::min(sx, sy), Viewport::kMinScale, Viewport::kMaxScale);
+    canvas_.markConfigChanged();
 }
 
 // ====================================================================
@@ -698,9 +861,13 @@ void InputHandler::startEditing(const std::string& uuid, bool name) {
 }
 
 void InputHandler::commitEdit() {
-    NodeEditor& ed = ui_.nodeEditor;
+    const NodeEditor ed = ui_.nodeEditor;
+    ui_.nodeEditor = NodeEditor{};
     if (!ed.active) return;
-    if (auto node = canvas_.getNode(ed.nodeUuid)) {
+    auto node = canvas_.getNode(ed.nodeUuid);
+    if (!node || (ed.editingName ? node->name : node->text) == ed.text) return;
+
+    edit([&] {
         if (ed.editingName) {
             node->name = ed.text;
             // Make room for the label.
@@ -712,12 +879,7 @@ void InputHandler::commitEdit() {
         canvas_.markChanged(node->uuid);
         canvas_.expandParentToFit(node->uuid, 2.0);
         if (!node->parentId.empty()) canvas_.resolveOverlaps(node->parentId);
-    }
-    ed = NodeEditor{};
-}
-
-void InputHandler::cancelEdit() {
-    ui_.nodeEditor = NodeEditor{};
+    });
 }
 
 void InputHandler::editorKey(const InputEvent& e) {
@@ -728,7 +890,7 @@ void InputHandler::editorKey(const InputEvent& e) {
     ed.cursorCol = std::clamp(ed.cursorCol, 0, utf8::length(*line));
 
     switch (e.key) {
-        case key::Escape: cancelEdit(); return;
+        case key::Escape: ui_.nodeEditor = NodeEditor{}; return;  // cancel
         case key::Enter:
             if (ed.editingName || e.mods.ctrl) {
                 commitEdit();
@@ -812,13 +974,15 @@ void InputHandler::startConnectionEdit(const std::string& connUuid, int x, int y
 }
 
 void InputHandler::commitConnectionEdit() {
-    ConnectionEditor& ed = ui_.connEditor;
+    const ConnectionEditor ed = ui_.connEditor;
+    ui_.connEditor = ConnectionEditor{};
     if (!ed.active) return;
-    if (auto conn = canvas_.getConnection(ed.connUuid)) {
+    auto conn = canvas_.getConnection(ed.connUuid);
+    if (!conn || conn->name == ed.text) return;
+    edit([&] {
         conn->name = ed.text;
-        canvas_.markCanvasChanged();
-    }
-    ed = ConnectionEditor{};
+        canvas_.markConfigChanged();
+    });
 }
 
 void InputHandler::connectionEditorKey(const InputEvent& e) {

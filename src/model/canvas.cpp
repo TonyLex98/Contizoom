@@ -37,12 +37,25 @@ void Canvas::touch() {
 
 void Canvas::markChanged(const std::string& uuid) {
     if (uuid.empty()) return;
-    changedNodes_.insert(uuid);
+    pending_.nodes.insert(uuid);
+    pending_.removed.erase(uuid);
     lastChangeTime_ = std::chrono::steady_clock::now();
 }
 
-void Canvas::markCanvasChanged() {
-    canvasChanged_ = true;
+void Canvas::markRemoved(const std::string& uuid) {
+    if (uuid.empty()) return;
+    pending_.nodes.erase(uuid);
+    pending_.removed.insert(uuid);
+    lastChangeTime_ = std::chrono::steady_clock::now();
+}
+
+void Canvas::markConfigChanged() {
+    pending_.config = true;
+    lastChangeTime_ = std::chrono::steady_clock::now();
+}
+
+void Canvas::markAllChanged() {
+    pending_.full = true;
     lastChangeTime_ = std::chrono::steady_clock::now();
 }
 
@@ -52,11 +65,22 @@ void Canvas::notifyChanged(bool force) {
     if (!force && elapsed < throttleDelay_) return;
 
     // Swap out first: the callback may trigger further changes.
-    std::set<std::string> nodes;
-    nodes.swap(changedNodes_);
-    const bool canvas = canvasChanged_;
-    canvasChanged_ = false;
-    changed_(nodes, canvas);
+    ChangeSet changes;
+    std::swap(changes, pending_);
+    changed_(changes);
+}
+
+void Canvas::replaceContent(std::vector<std::shared_ptr<Node>> nodes,
+                            std::vector<std::shared_ptr<Connection>> connections) {
+    nodes_.clear();
+    connections_.clear();
+    for (auto& n : nodes) insertNode(std::move(n));
+    rebuildHierarchy();
+    for (auto& c : connections) {
+        if (getNode(c->fromUuid) && getNode(c->toUuid)) insertConnection(std::move(c));
+    }
+    touch();
+    markAllChanged();
 }
 
 void Canvas::processPendingChanges() {
@@ -70,8 +94,7 @@ void Canvas::flushChanges() {
 void Canvas::clear() {
     nodes_.clear();
     connections_.clear();
-    changedNodes_.clear();
-    canvasChanged_ = false;
+    pending_ = ChangeSet{};
 }
 
 // ====================================================================
@@ -170,7 +193,6 @@ std::string Canvas::createNode(const std::string& text, const Rect& rect, const 
 
     modifiedAt = now;
     markChanged(node->uuid);
-    markCanvasChanged();
     return node->uuid;
 }
 
@@ -187,15 +209,21 @@ bool Canvas::removeSubtree(const std::string& uuid) {
 
     std::set<std::string> removed{uuid};
     for (const auto& d : getDescendants(uuid)) removed.insert(d->uuid);
-    for (const auto& r : removed) nodes_.erase(r);
+    for (const auto& r : removed) {
+        nodes_.erase(r);
+        markRemoved(r);
+    }
 
     for (auto it = connections_.begin(); it != connections_.end();) {
-        if (removed.count(it->second->fromUuid) || removed.count(it->second->toUuid)) it = connections_.erase(it);
-        else ++it;
+        if (removed.count(it->second->fromUuid) || removed.count(it->second->toUuid)) {
+            it = connections_.erase(it);
+            markConfigChanged();
+        } else {
+            ++it;
+        }
     }
 
     touch();
-    markCanvasChanged();
     return true;
 }
 
@@ -390,7 +418,6 @@ std::string Canvas::createFrame(const std::vector<std::string>& nodeUuids, const
         expandParentToFit(frameUuid, 2.0);
         resolveOverlaps(parentId);
     }
-    markCanvasChanged();
     return frameUuid;
 }
 
@@ -532,7 +559,7 @@ std::string Canvas::createConnection(const std::string& fromUuid, const std::str
     connections_[conn->uuid] = conn;
 
     touch();
-    markCanvasChanged();
+    markConfigChanged();
     return conn->uuid;
 }
 
@@ -544,7 +571,7 @@ void Canvas::insertConnection(std::shared_ptr<Connection> connection) {
 bool Canvas::removeConnection(const std::string& connUuid) {
     if (connections_.erase(connUuid) == 0) return false;
     touch();
-    markCanvasChanged();
+    markConfigChanged();
     return true;
 }
 

@@ -1,6 +1,8 @@
 #ifndef IC_PROJECT_MANAGER_H
 #define IC_PROJECT_MANAGER_H
 
+#include "storage/storage.h"
+
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -10,12 +12,12 @@
 namespace ic {
 
 class Canvas;
-class IStorage;
 
 struct ProjectInfo {
     std::string uuid;  // session id, not stored on disk
     std::string name;
-    std::string path;  // empty until first saved
+    std::string path;     // always set; the directory appears on first save
+    bool onDisk = false;  // written at least once
     uint64_t createdAt = 0;
     uint64_t modifiedAt = 0;
 
@@ -23,9 +25,13 @@ struct ProjectInfo {
     std::string displayPath() const;
 };
 
-// Open projects and their persistence. Each open project has its own
-// Canvas; edits to a project that has a path are auto-saved incrementally
-// (only the nodes that changed) once they settle.
+// Open projects and their persistence.
+//
+// Every project has a path from the moment it's created and is auto-saved
+// from its first edit on, so nothing is lost if the program or the machine
+// goes down. Auto-save writes only what changed (see Canvas::ChangeSet).
+// A `.lock` file inside the project directory detects the same project
+// being open in two windows, which would otherwise overwrite each other.
 class ProjectManager {
 public:
     explicit ProjectManager(std::unique_ptr<IStorage> storage);
@@ -33,8 +39,9 @@ public:
 
     // Where projects are kept: %USERPROFILE%/.infinite_canvas/projects.
     static std::string defaultProjectsDir();
-    // A free "<dir>/<sanitized name>.canvas" path for a new project.
-    static std::string suggestPath(const std::string& name);
+    // A free "<dir>/<sanitized name>.canvas" path, not used on disk or by
+    // any open project.
+    std::string suggestPath(const std::string& name) const;
 
     std::string createProject(const std::string& name = "Untitled");
     std::string openProject(const std::string& path);  // "" on failure, see lastError()
@@ -42,9 +49,10 @@ public:
     void closeAll();
     void switchTo(const std::string& uuid);
 
-    bool saveCurrent();  // to its path, or a suggested one if never saved
-    bool saveAs(const std::string& path);
-    bool revert();       // reload the active project from disk
+    bool saveCurrent();                         // full save to the project's path
+    bool saveAs(const std::string& name);       // copy to a new project and continue there
+    bool revert();                              // reload the active project from disk
+    bool exportMarkdown(std::string& outPath);  // writes "<project>.md" next to the project
 
     void processAutoSave();
     void flushAll();
@@ -55,12 +63,15 @@ public:
     const ProjectInfo* activeProject() const;
     const std::vector<ProjectInfo>& projects() const { return projects_; }
 
-    std::vector<std::string> listSavedProjects() const;
+    // Saved projects, most recently modified first.
+    std::vector<ProjectSummary> listSavedProjects() const;
 
-    // Last failure (open/save/revert, or a background auto-save).
+    // Last failure (open/save/revert/export).
     const std::string& lastError() const { return lastError_; }
-    // Returns and clears an auto-save failure that hasn't been shown yet.
+    // Messages for the status bar that haven't been shown yet (auto-save
+    // failures, lock warnings). Each call returns and clears them.
     std::string takeAutoSaveError();
+    std::string takeWarning();
 
 private:
     std::unique_ptr<IStorage> storage_;
@@ -69,9 +80,14 @@ private:
     std::string activeUuid_;
     std::string lastError_;
     std::string autoSaveError_;
+    std::string warning_;
+    std::string lockToken_;  // identifies this session's locks
 
     ProjectInfo* find(const std::string& uuid);
     void setupAutoSave(const std::string& uuid);
+    bool writeFull(ProjectInfo& info, Canvas& canvas);
+    void acquireLock(const ProjectInfo& info);
+    void releaseLock(const ProjectInfo& info);
 };
 
 }  // namespace ic

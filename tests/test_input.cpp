@@ -18,7 +18,7 @@ struct Harness {
 
     void frame() {
         renderer.render(canvas, ui, HudInfo{});
-        handler.setLayout(renderer.screenRects(), renderer.sidebarRects(), renderer.canvasArea());
+        handler.setLayout(renderer.screenRects(), renderer.sidebarRects(), renderer.canvasArea(), renderer.editorRect());
     }
 
     InputResult send(InputEvent e) {
@@ -228,4 +228,131 @@ TEST(input_right_click_requests_menu) {
     e.mouseX = 50;
     e.mouseY = 10;
     CHECK(h.handler.process(e) == InputResult::RequestMenu);
+    CHECK(h.handler.contextTarget().kind == ContextTarget::Kind::Canvas);
+}
+
+TEST(input_click_on_selected_box_does_not_open_editor) {
+    Harness h;
+    const std::string id = h.canvas.createNode("text", {0, 0, 30, 10}, "box");
+    h.frame();
+    const auto [x, y] = h.bodyOf(id);
+    for (int i = 0; i < 2; ++i) {  // two slow clicks (not a double-click)
+        h.mouse(InputType::MouseDown, x + i * 3, y);
+        h.mouse(InputType::MouseUp, x + i * 3, y);
+    }
+    CHECK(h.ui.isSelected(id));
+    CHECK(!h.ui.nodeEditor.active);
+}
+
+namespace {
+
+// Two boxes side by side, connected A -> B.
+struct Linked : Harness {
+    std::string a, b, conn;
+    Linked() {
+        a = canvas.createNode("", {0, 0, 20, 8}, "A");
+        b = canvas.createNode("", {40, 0, 20, 8}, "B");
+        conn = canvas.createConnection(a, b);
+        frame();
+    }
+    // A cell on the drawn line, away from its ends.
+    std::pair<int, int> onLine() const {
+        const CellPath p = routeConnection(renderer.screenRects().at(a), renderer.screenRects().at(b),
+                                           *canvas.getConnection(conn));
+        return p[p.size() / 2];
+    }
+};
+
+}  // namespace
+
+TEST(input_connection_style_reverse_and_delete_keys) {
+    Linked h;
+    const auto [x, y] = h.onLine();
+    h.mouse(InputType::MouseDown, x, y);
+    h.mouse(InputType::MouseUp, x, y);
+    CHECK_EQ(h.ui.selectedConnection, h.conn);
+
+    h.key('T');
+    CHECK(h.canvas.getConnection(h.conn)->type == ConnType::DashedArrow);
+    h.key('V');
+    CHECK_EQ(h.canvas.getConnection(h.conn)->fromUuid, h.b);
+    CHECK_EQ(h.canvas.getConnection(h.conn)->toUuid, h.a);
+    h.key('X');
+    CHECK(h.canvas.allConnections().empty());
+    CHECK(h.canvas.getNode(h.a) != nullptr);  // X deleted the line, not a box
+
+    h.key('Z', 0, Modifiers{true, false, false});  // and it can be undone
+    CHECK_EQ(h.canvas.allConnections().size(), static_cast<size_t>(1));
+}
+
+TEST(input_line_inside_parent_wins_over_the_parent) {
+    Harness h;
+    const std::string p = h.canvas.createNode("", {0, 0, 70, 16}, "P");
+    const std::string a = h.canvas.createNode("", {3, 4, 20, 8}, "A", p);
+    const std::string b = h.canvas.createNode("", {45, 4, 20, 8}, "B", p);
+    const std::string conn = h.canvas.createConnection(a, b);
+    h.frame();
+    const CellPath path = routeConnection(h.renderer.screenRects().at(a), h.renderer.screenRects().at(b),
+                                          *h.canvas.getConnection(conn));
+    const auto [x, y] = path[path.size() / 2];
+    h.mouse(InputType::MouseDown, x, y);
+    h.mouse(InputType::MouseUp, x, y);
+    CHECK_EQ(h.ui.selectedConnection, conn);
+    CHECK(!h.ui.isSelected(p));
+}
+
+TEST(input_connecting_twice_selects_the_existing_link) {
+    Linked h;
+    const CellBox ba = cellBox(h.renderer.screenRects().at(h.a));
+    int ax = 0, ay = 0;
+    anchorCell(ba, Anchor{AnchorEdge::Right, 1}, ax, ay);
+    const auto [bx, by] = h.bodyOf(h.b);
+    h.mouse(InputType::MouseMove, ax, ay);  // hover shows the anchors
+    h.mouse(InputType::MouseDown, ax, ay);
+    CHECK(h.ui.connectPreview);
+    h.mouse(InputType::MouseMove, bx, by);
+    h.mouse(InputType::MouseUp, bx, by);
+    CHECK_EQ(h.canvas.allConnections().size(), static_cast<size_t>(1));
+    CHECK_EQ(h.ui.selectedConnection, h.conn);
+    CHECK(!h.ui.connectPreview);
+}
+
+TEST(input_undo_redo_new_box_and_drag) {
+    Harness h;
+    h.frame();
+    h.key('N');
+    h.key(key::Escape);  // leave the name as is
+    CHECK_EQ(h.canvas.allNodes().size(), static_cast<size_t>(1));
+    const std::string id = h.canvas.allNodes().begin()->first;
+
+    const auto [x, y] = h.bodyOf(id);
+    const double x0 = h.canvas.getNode(id)->rect.x;
+    h.mouse(InputType::MouseDown, x, y);
+    h.mouse(InputType::MouseMove, x + 3, y);
+    h.mouse(InputType::MouseMove, x + 6, y);
+    h.mouse(InputType::MouseUp, x + 6, y);
+
+    const Modifiers ctrl{true, false, false};
+    h.key('Z', 0, ctrl);  // the whole drag is one step
+    CHECK_NEAR(h.canvas.getNode(id)->rect.x, x0, 1e-9);
+    h.key('Z', 0, ctrl);
+    CHECK(h.canvas.allNodes().empty());
+    h.key('Y', 0, ctrl);
+    CHECK_EQ(h.canvas.allNodes().size(), static_cast<size_t>(1));
+}
+
+TEST(input_right_click_targets_box_or_connection) {
+    Linked h;
+    InputEvent e;
+    e.type = InputType::MouseDown;
+    e.button = MouseButton::Right;
+    std::tie(e.mouseX, e.mouseY) = h.bodyOf(h.a);
+    h.handler.process(e);
+    CHECK(h.handler.contextTarget().kind == ContextTarget::Kind::Node);
+    CHECK(h.ui.isSelected(h.a));
+
+    std::tie(e.mouseX, e.mouseY) = h.onLine();
+    h.handler.process(e);
+    CHECK(h.handler.contextTarget().kind == ContextTarget::Kind::Connection);
+    CHECK_EQ(h.ui.selectedConnection, h.conn);
 }

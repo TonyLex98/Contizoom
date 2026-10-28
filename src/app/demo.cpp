@@ -24,7 +24,7 @@ void buildDemoCanvas(Canvas& c) {
 
     const std::string basics = box(c, welcome, "Basics",
                                    "N          new box (inside the selected one)\n"
-                                   "Dbl-click  edit text, or the name on the header row\n"
+                                   "Dbl-click  edit text; on the header: rename (F2)\n"
                                    "Drag       move   Corner   resize\n"
                                    "X / Del    delete with everything inside",
                                    {4, 6, 64, 18});
@@ -49,8 +49,8 @@ void buildDemoCanvas(Canvas& c) {
                                 {4, 30, 64, 18});
 
     const std::string links = box(c, welcome, "Connections",
-                                  "Drag from a • on one box to another box.\n"
-                                  "Click a line to select it, double-click to name it.",
+                                  "Hover a box, drag from one of its • to another box.\n"
+                                  "Click a line: T style, V reverse, F2 name, X delete.",
                                   {78, 30, 66, 18});
     const std::string from = box(c, links, "From", "", {6, 9, 18, 6});
     const std::string to = box(c, links, "To", "", {40, 9, 18, 6});
@@ -60,8 +60,8 @@ void buildDemoCanvas(Canvas& c) {
     }
 
     box(c, welcome, "Projects",
-        "Right-click anywhere for the project menu: new, open, save as, revert.\n"
-        "Saved projects auto-save every edit; files live in ~/.infinite_canvas/projects.",
+        "Every edit is saved automatically; Ctrl+Z / Ctrl+Y undo and redo.\n"
+        "Right-click a box, a line or empty space for its menu (open, copy, export...).",
         {4, 52, 140, 10});
     c.createConnection(nav, links, "", ConnType::DashedLine);
 

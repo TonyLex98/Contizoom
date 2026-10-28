@@ -120,6 +120,7 @@ void ConsoleRenderer::render(const Canvas& canvas, const UiState& ui, const HudI
     buffer_.clear();
     screenRects_.clear();
     sidebarRects_.clear();
+    editorRect_ = ScreenRect{};
 
     auto visible = canvas.getVisibleNodes(canvas.viewport, canvasArea_.width(), canvasArea_.height());
     std::vector<const Node*> sorted;
@@ -195,11 +196,40 @@ void ConsoleRenderer::render(const Canvas& canvas, const UiState& ui, const HudI
 
     // After the boxes: a connection between two children must sit on top of
     // their parent's (opaque) interior.
+    //
+    // An endpoint that is collapsed into an ancestor (zoomed out) is drawn
+    // to that ancestor instead, dimmed, so links between distant parts of
+    // the map stay visible. Several hidden links between the same two
+    // visible boxes are drawn once.
+    auto representative = [&](const std::string& uuid) {
+        std::string id = uuid;
+        for (size_t guard = 0; !id.empty() && !drawn.count(id) && guard < 1000; ++guard) {
+            auto n = canvas.getNode(id);
+            id = n ? n->parentId : std::string();
+        }
+        return id;
+    };
+    std::set<std::pair<std::string, std::string>> aggregated;
     for (const auto& [_, conn] : canvas.allConnections()) {
-        if (!fullBoxes.count(conn->fromUuid) || !fullBoxes.count(conn->toUuid)) continue;
-        drawConnection(*conn, screenRects_[conn->fromUuid], screenRects_[conn->toUuid],
-                       ui.selectedConnection == conn->uuid);
+        const bool direct = fullBoxes.count(conn->fromUuid) && fullBoxes.count(conn->toUuid);
+        if (direct) {
+            drawConnection(*conn, screenRects_[conn->fromUuid], screenRects_[conn->toUuid],
+                           ui.selectedConnection == conn->uuid, false);
+            continue;
+        }
+        const std::string from = representative(conn->fromUuid);
+        const std::string to = representative(conn->toUuid);
+        if (from.empty() || to.empty() || from == to) continue;
+        // Skip if one end is an ancestor of the other: the line would run
+        // from a box into its own interior.
+        if (canvas.isAncestorOf(from, to) || canvas.isAncestorOf(to, from)) continue;
+        if (!aggregated.insert({from, to}).second) continue;
+        Connection shown = *conn;
+        if (from != conn->fromUuid) shown.fromAnchor = Anchor{};
+        if (to != conn->toUuid) shown.toAnchor = Anchor{};
+        drawConnection(shown, screenRects_[from], screenRects_[to], false, true);
     }
+    if (ui.connectPreview && !ui.connectionSource.empty()) drawConnectionPreview(canvas, ui);
 
     // Names last among canvas content, parents above children, so a child
     // box can never hide its parent's label.
@@ -294,7 +324,7 @@ void ConsoleRenderer::drawNode(const Node& node, const ScreenRect& sr, const UiS
     buffer_.put(b.right(), b.bottom(), st.br, cornerAttr(ResizeCorner::BottomRight));
 
     // Connection anchors: drag from one to another box to link them.
-    if (canShowAnchors(b)) {
+    if (ui.showsAnchors(node.uuid) && canShowAnchors(b)) {
         for (const Anchor& a : allAnchors()) {
             int px = 0, py = 0;
             if (!anchorCell(b, a, px, py)) continue;
@@ -347,20 +377,21 @@ void ConsoleRenderer::drawNodeName(const Node& node, const ScreenRect& sr, const
 // ====================================================================
 
 void ConsoleRenderer::drawConnection(const Connection& conn, const ScreenRect& from, const ScreenRect& to,
-                                     bool selected) {
+                                     bool selected, bool dim) {
     if (!from.valid() || !to.valid()) return;
 
     wchar_t hCh = L'─', vCh = L'│';
-    uint16_t attr = isArrow(conn.type) ? color::BrightBlue : color::DarkGray;
+    uint16_t attr = isArrow(conn.type) ? color::BrightBlue : color::Gray;
     if (conn.type == ConnType::DottedLine || conn.type == ConnType::DottedArrow) {
         hCh = vCh = L'·';
-        attr = color::Magenta;
+        attr = color::BrightMagenta;
     } else if (conn.type == ConnType::DashedLine || conn.type == ConnType::DashedArrow) {
         hCh = L'-';
         vCh = L'¦';
         attr = color::Yellow;
     }
-    if (selected) attr = color::White;
+    if (dim) attr = color::DarkGray;
+    if (selected) attr = color::make(color::Black, color::BrightYellow);
     const bool solid = hCh == L'─';
 
     const CellPath pts = routeConnection(from, to, conn);
@@ -465,52 +496,93 @@ void ConsoleRenderer::drawNodeEditor(const NodeEditor& editor) {
     const CellBox b = cellBox(it->second);
     const uint16_t attr = color::make(color::White, color::Blue);
 
+    const CanvasArea& area = canvasArea_;
+
     if (editor.editingName) {
-        // One-line field over the header row.
+        // One-line field over the header row, as wide as the text needs.
         const int len = utf8::length(editor.text);
-        const int w = std::max(b.w, len + 4);
-        buffer_.fill(b.x, b.y, w, 1, L' ', attr);
-        buffer_.put(b.x, b.y, L'[', attr);
-        buffer_.put(b.x + w - 1, b.y, L']', attr);
-        buffer_.text(b.x + 2, b.y, editor.text, attr, w - 3);
-        const int cursorX = std::min(b.x + 2 + editor.cursorCol, b.x + w - 2);
-        buffer_.setAttr(cursorX, b.y, color::Inverse);
-        if (buffer_.charAt(cursorX, b.y) == L' ') buffer_.put(cursorX, b.y, L'_', color::Inverse);
-        it->second.w = std::max(it->second.w, static_cast<double>(w));
+        const int w = std::min(std::max({b.w, len + 4, 16}), area.width());
+        const int x = std::clamp(b.x, area.left, area.right - w + 1);
+        const int y = std::clamp(b.y, area.top, area.bottom);
+        buffer_.fill(x, y, w, 1, L' ', attr);
+        buffer_.put(x, y, L'[', attr);
+        buffer_.put(x + w - 1, y, L']', attr);
+        const int fieldW = w - 3;
+        const int first = std::max(0, editor.cursorCol - fieldW + 1);  // keep the cursor in view
+        buffer_.text(x + 2, y, editor.text.substr(utf8::byteOffset(editor.text, first)), attr, fieldW);
+        const int cursorX = x + 2 + editor.cursorCol - first;
+        if (buffer_.charAt(cursorX, y) == L' ') buffer_.put(cursorX, y, L'_', color::Inverse);
+        else buffer_.setAttr(cursorX, y, color::Inverse);
+        editorRect_ = ScreenRect{static_cast<double>(x), static_cast<double>(y), static_cast<double>(w), 1.0};
         return;
     }
 
-    // Multi-line editor: grows past the box when the text needs more room.
+    // Multi-line text: a panel sized to the text (not to the box, which may
+    // be a big container whose children must stay visible), placed at the
+    // box's top-left and kept on screen. Scrolls to follow the cursor.
     const auto lines = splitLines(editor.text);
     int maxLen = 0;
     for (const auto& l : lines) maxLen = std::max(maxLen, utf8::length(l));
-    const int w = std::max(b.w, maxLen + 3);
-    const int h = std::max(b.h, static_cast<int>(lines.size()) + 2);
+    const int w = std::min(std::max(maxLen + 4, 32), area.width());
+    const int h = std::min(std::max(static_cast<int>(lines.size()) + 2, 4), area.height());
+    const int x = std::clamp(b.x, area.left, area.right - w + 1);
+    const int y = std::clamp(b.y, area.top, area.bottom - h + 1);
+    const int innerW = w - 2, innerH = h - 2;
+    const int firstCol = std::max(0, editor.cursorCol - innerW + 1);
+    const int firstRow = std::max(0, editor.cursorRow - innerH + 1);
 
-    buffer_.fill(b.x, b.y, w, h, L' ', attr);
-    for (int x = b.x + 1; x < b.x + w - 1; ++x) {
-        buffer_.put(x, b.y, L'═', attr);
-        buffer_.put(x, b.y + h - 1, L'═', attr);
+    buffer_.fill(x, y, w, h, L' ', attr);
+    for (int cx = x + 1; cx < x + w - 1; ++cx) {
+        buffer_.put(cx, y, L'═', attr);
+        buffer_.put(cx, y + h - 1, L'═', attr);
     }
-    for (int y = b.y + 1; y < b.y + h - 1; ++y) {
-        buffer_.put(b.x, y, L'║', attr);
-        buffer_.put(b.x + w - 1, y, L'║', attr);
+    for (int cy = y + 1; cy < y + h - 1; ++cy) {
+        buffer_.put(x, cy, L'║', attr);
+        buffer_.put(x + w - 1, cy, L'║', attr);
     }
-    buffer_.put(b.x, b.y, L'╔', attr);
-    buffer_.put(b.x + w - 1, b.y, L'╗', attr);
-    buffer_.put(b.x, b.y + h - 1, L'╚', attr);
-    buffer_.put(b.x + w - 1, b.y + h - 1, L'╝', attr);
+    buffer_.put(x, y, L'╔', attr);
+    buffer_.put(x + w - 1, y, L'╗', attr);
+    buffer_.put(x, y + h - 1, L'╚', attr);
+    buffer_.put(x + w - 1, y + h - 1, L'╝', attr);
+    buffer_.text(x + 2, y, " text ", color::make(color::BrightYellow, color::Blue), w - 4);
 
-    for (size_t i = 0; i < lines.size(); ++i) {
-        buffer_.text(b.x + 1, b.y + 1 + static_cast<int>(i), lines[i], attr, w - 2);
+    for (int row = 0; row < innerH && firstRow + row < static_cast<int>(lines.size()); ++row) {
+        const std::string& l = lines[static_cast<size_t>(firstRow + row)];
+        buffer_.text(x + 1, y + 1 + row, l.substr(utf8::byteOffset(l, firstCol)), attr, innerW);
     }
-    const int cx = b.x + 1 + editor.cursorCol;
-    const int cy = b.y + 1 + editor.cursorRow;
+    const int cx = x + 1 + editor.cursorCol - firstCol;
+    const int cy = y + 1 + editor.cursorRow - firstRow;
     if (buffer_.charAt(cx, cy) == L' ') buffer_.put(cx, cy, L'_', color::Inverse);
     else buffer_.setAttr(cx, cy, color::Inverse);
 
-    it->second.w = std::max(it->second.w, static_cast<double>(w));
-    it->second.h = std::max(it->second.h, static_cast<double>(h));
+    editorRect_ = ScreenRect{static_cast<double>(x), static_cast<double>(y), static_cast<double>(w),
+                             static_cast<double>(h)};
+}
+
+void ConsoleRenderer::drawConnectionPreview(const Canvas& canvas, const UiState& ui) {
+    auto it = screenRects_.find(ui.connectionSource);
+    if (it == screenRects_.end() || !canvas.getNode(ui.connectionSource)) return;
+
+    // Snap to the box under the cursor (and its anchor) when there is one.
+    ScreenRect target{static_cast<double>(ui.previewX), static_cast<double>(ui.previewY), 1.0, 1.0};
+    Connection preview;
+    preview.fromAnchor = ui.previewFromAnchor;
+    if (!ui.hovered.empty() && ui.hovered != ui.connectionSource) {
+        if (auto t = screenRects_.find(ui.hovered); t != screenRects_.end()) {
+            target = t->second;
+            if (ui.anchorHoverNode == ui.hovered) preview.toAnchor = ui.anchorHover;
+        }
+    }
+    const CellPath pts = routeConnection(it->second, target, preview);
+    const uint16_t attr = color::BrightYellow;
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        const auto [sx, sy] = pts[i];
+        const auto [ex, ey] = pts[i + 1];
+        for (int y = std::min(sy, ey); y <= std::max(sy, ey); ++y)
+            for (int x = std::min(sx, ex); x <= std::max(sx, ex); ++x)
+                if (std::make_pair(x, y) != pts.front()) buffer_.put(x, y, L'·', attr);
+    }
+    buffer_.put(ui.previewX, ui.previewY, L'+', attr);
 }
 
 void ConsoleRenderer::drawConnectionEditor(const ConnectionEditor& editor) {
@@ -568,11 +640,25 @@ void ConsoleRenderer::drawHud(const Canvas& canvas, const UiState& ui, const Hud
     } else if (ui.nodeEditor.active || ui.connEditor.active) {
         help = " Enter: save   Esc: cancel";
     } else if (!ui.connectionSource.empty()) {
-        help = " Release over another box to connect   Esc: cancel";
+        help = " Release over another box to connect (over a • to pin the end)   Esc: cancel";
+    } else if (!ui.selectedConnection.empty()) {
+        std::string style = "arrow";
+        if (auto c = canvas.getConnection(ui.selectedConnection)) {
+            switch (c->type) {
+                case ConnType::Arrow: style = "arrow"; break;
+                case ConnType::DashedArrow: style = "dashed arrow"; break;
+                case ConnType::DottedArrow: style = "dotted arrow"; break;
+                case ConnType::Line: style = "line"; break;
+                case ConnType::DashedLine: style = "dashed line"; break;
+                case ConnType::DottedLine: style = "dotted line"; break;
+            }
+        }
+        help = " Connection (" + style + "):   T style   V reverse   F2/Enter rename   X delete   "
+               "Right-click menu   Esc deselect";
     } else {
-        help = " N new   Dbl-click edit   R rename   Drag move   Corner resize   Drag • connect   "
-               "Tab/Shift+Tab un/nest   F frame   X delete   Wheel zoom   WASD pan   0 fit   "
-               "Shift+drag select   Right-click menu   Ctrl+S save   Ctrl+Q quit";
+        help = " N new   Dbl-click edit   F2 rename   Drag move   Corner resize   Drag • connect   "
+               "Tab/Shift+Tab un/nest   F frame   X delete   Ctrl+Z undo   Wheel zoom   WASD pan   0 fit   "
+               "Shift+drag select   Right-click menu   Ctrl+Q quit";
     }
     buffer_.fill(0, bottom, w, 1, L' ', color::make(color::Gray, color::Black));
     buffer_.text(0, bottom, help, color::DarkGray, w);

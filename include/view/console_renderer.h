@@ -41,18 +41,23 @@ public:
     const std::map<std::string, ScreenRect>& screenRects() const { return screenRects_; }
     const std::map<std::string, ScreenRect>& sidebarRects() const { return sidebarRects_; }
     const CanvasArea& canvasArea() const { return canvasArea_; }
+    // Where the in-place editor was drawn (invalid when not editing).
+    const ScreenRect& editorRect() const { return editorRect_; }
 
 private:
     CellBuffer buffer_;
     CanvasArea canvasArea_;
     std::map<std::string, ScreenRect> screenRects_;
     std::map<std::string, ScreenRect> sidebarRects_;
+    ScreenRect editorRect_;
 
     ScreenRect computeScreenRect(const Node& node, const Canvas& canvas);
     void drawNode(const Node& node, const ScreenRect& sr, const UiState& ui, bool isCluster);
     void drawMarker(const Node& node, const ScreenRect& sr, NodeState state, bool isCluster);
     void drawNodeName(const Node& node, const ScreenRect& sr, const UiState& ui);
-    void drawConnection(const Connection& conn, const ScreenRect& from, const ScreenRect& to, bool selected);
+    void drawConnection(const Connection& conn, const ScreenRect& from, const ScreenRect& to, bool selected,
+                        bool dim);
+    void drawConnectionPreview(const Canvas& canvas, const UiState& ui);
     void drawConnectionLabel(const Connection& conn, const ScreenRect& from, const ScreenRect& to, bool selected);
     void drawAreaSelection(const AreaSelection& sel, const Viewport& vp);
     void drawNodeEditor(const NodeEditor& editor);

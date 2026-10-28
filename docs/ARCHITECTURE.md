@@ -80,6 +80,16 @@ move, so the child doesn't move twice.
 Letter shortcuts use virtual key codes, so they work on any keyboard layout. Typed text uses
 the character, with UTF-16 surrogate pairs combined into code points in `ConsoleInput`.
 
+Every edit goes through `InputHandler::edit()`, which takes a snapshot before the change and
+records it in `History` if the document actually changed. A drag or resize takes its snapshot
+when the gesture starts and records it when the gesture ends, so each one is a single undo
+step. Snapshots are the compact JSON of the content (see `storage/document_json`). Documents
+are small, so storing whole snapshots is cheap, and it makes every action undoable exactly,
+with no inverse operation for each command.
+
+Commands are also exposed as `InputHandler::perform(Action)`, which the context menus use, so
+keys and menus can never behave differently.
+
 ## Storage
 
 `JsonStorage` stores one directory per project and one file per node (see the README for the
@@ -87,8 +97,16 @@ layout). Notes on the implementation:
 
 - **Atomic writes.** Each file is written to `*.tmp` and then renamed over the target.
   `config.json`, which marks a directory as a project, is written last.
-- **Incremental auto-save.** A node edit rewrites only that node's file. A structural change
-  rewrites everything and removes the files of deleted nodes.
+- **Incremental auto-save.** `Canvas` reports a `ChangeSet` with the changed nodes, the
+  removed nodes, a config flag (camera, name, links) and a full flag (content replaced by
+  undo/redo or load). `ProjectManager` turns these into `saveNode`, `removeNode` and
+  `saveConfig` calls, and only the full flag rewrites everything.
+- **Always persisted.** A new project gets its path when it's created. The first edit writes it
+  in full, and every edit after that is saved incrementally, so there is no unsaved state. An
+  untouched new project never creates a folder.
+- **Locking.** `.lock` holds the owning process id and a session token. Opening a project
+  whose lock belongs to another live process shows a warning. A lock left behind by a crash
+  (its process is gone) is silently taken over.
 - **Loading** parses everything first and only touches the target canvas once nothing can
   fail any more, so a failed revert leaves the document intact.
 - **Versioning.** `"format": "1.1"`. A reader accepts the same major version and treats a
