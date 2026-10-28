@@ -68,12 +68,14 @@ add_library(infinite_canvas_core STATIC
     src/i18n/i18n.cpp
     src/util/file.cpp
     src/util/json.cpp
+    src/util/xml.cpp
     src/util/process.cpp
     src/model/node.cpp
     src/model/canvas.cpp
+    src/model/arrange.cpp
     src/storage/document_json.cpp
     src/storage/json_storage.cpp
-    src/storage/markdown_export.cpp
+    src/storage/exchange.cpp
     src/view/console_renderer.cpp
     src/input/handler.cpp
     src/input/history.cpp
@@ -118,6 +120,7 @@ if(IC_BUILD_TESTS)
         tests/test_history.cpp
         tests/test_project.cpp
         tests/test_i18n.cpp
+        tests/test_exchange.cpp
     )
     target_link_libraries(ic_tests PRIVATE infinite_canvas_core)
     add_test(NAME unit_tests COMMAND ic_tests)

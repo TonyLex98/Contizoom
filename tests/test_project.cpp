@@ -1,8 +1,9 @@
 #include "test.h"
 #include "app/project_manager.h"
+#include "app/settings.h"
 #include "model/canvas.h"
 #include "storage/json_storage.h"
-#include "storage/markdown_export.h"
+#include "storage/exchange.h"
 #include "util/clock.h"
 #include "util/path.h"
 #include "util/process.h"
@@ -201,7 +202,7 @@ TEST(markdown_export_outlines_the_canvas) {
     const std::string d = c.createNode("", {60, 0, 10, 5}, "Done");
     const std::string conn = c.createConnection(b, d, "leads to");
     (void)conn;
-    const std::string md = exportMarkdown(c);
+    const std::string md = exchange::toMarkdown(c);
     CHECK(md.find("# Plan") == 0);
     CHECK(md.find("## Goals") != std::string::npos);
     CHECK(md.find("Line two") != std::string::npos);
@@ -215,5 +216,70 @@ TEST(project_unsupported_and_missing_paths_fail_cleanly) {
     ProjectManager pm(std::make_unique<JsonStorage>());
     CHECK(pm.openProject(path::toUtf8(home.dir / "nope.canvas")).empty());
     CHECK(!pm.lastError().empty());
+    CHECK(pm.activeProject() == nullptr);
+}
+
+TEST(settings_recent_list_moves_to_front_dedupes_and_caps) {
+    TempHome home;
+    Settings s;
+    s.touchRecent("C:/a.canvas", "A", 1);
+    s.touchRecent("C:/b.canvas", "B", 2);
+    s.touchRecent("C:/a.canvas", "A2", 3);
+    CHECK_EQ(s.recent.size(), size_t(2));
+    CHECK_EQ(s.recent[0].name, std::string("A2"));
+    CHECK_EQ(s.recent[0].openedAt, uint64_t(3));
+    for (int i = 0; i < 30; ++i) s.touchRecent("C:/p" + std::to_string(i) + ".canvas", "P", 10);
+    CHECK_EQ(s.recent.size(), Settings::kMaxRecent);
+
+    CHECK(s.save());
+    const Settings back = Settings::load();
+    CHECK_EQ(back.recent.size(), Settings::kMaxRecent);
+    CHECK_EQ(back.recent[0].path, s.recent[0].path);
+}
+
+TEST(settings_existing_recent_skips_deleted_projects) {
+    TempHome home;
+    ProjectManager pm(std::make_unique<JsonStorage>());
+    pm.createProject("Kept");
+    CHECK(pm.saveCurrent());
+    const std::string kept = pm.activeProject()->path;
+
+    Settings s;
+    s.touchRecent(path::toUtf8(home.dir / "gone.canvas"), "Gone", 2);
+    s.touchRecent(kept, "Kept", 1);
+    const auto list = s.existingRecent();
+    CHECK_EQ(list.size(), size_t(1));
+    CHECK_EQ(list[0].name, std::string("Kept"));
+}
+
+TEST(project_export_then_import_creates_a_saved_project) {
+    TempHome home;
+    ProjectManager pm(std::make_unique<JsonStorage>());
+    pm.createProject("Trip");
+    Canvas* c = pm.activeCanvas();
+    const std::string a = c->createNode("Passport", {0, 0, 30, 10}, "Pack");
+    c->createNode("", {2, 4, 10, 4}, "Socks", a);
+    CHECK(pm.saveCurrent());
+
+    for (const auto& f : exchange::formats()) {
+        const std::string out = path::toUtf8(home.dir / "out" / (std::string("trip") + f.extension));
+        CHECK(pm.exportActive(f.format, out));
+        CHECK(!pm.importProject(out).empty());
+        const ProjectInfo* p = pm.activeProject();
+        CHECK(p->onDisk);
+        CHECK(fs::exists(path::fromUtf8(p->path) / "config.json"));
+        CHECK_EQ(pm.activeCanvas()->allNodes().size(), size_t(2));
+    }
+    // Every import got its own folder.
+    CHECK_EQ(pm.projects().size(), exchange::formats().size() + 1);
+}
+
+TEST(project_import_reports_missing_and_unreadable_files) {
+    TempHome home;
+    ProjectManager pm(std::make_unique<JsonStorage>());
+    CHECK(pm.importProject(path::toUtf8(home.dir / "nope.md")).empty());
+    CHECK(!pm.lastError().empty());
+    std::ofstream(home.dir / "bad.json") << "{\"not\":\"a bundle\"}";
+    CHECK(pm.importProject(path::toUtf8(home.dir / "bad.json")).empty());
     CHECK(pm.activeProject() == nullptr);
 }

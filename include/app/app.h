@@ -29,8 +29,13 @@ public:
 
     ProjectManager& projects() { return projects_; }
 
-    // Opens the welcome project, creating it on first launch.
+    // What opens when the program starts without arguments: the most
+    // recently used project, or the welcome project on first launch.
+    void openStartupProject();
     void openDemo();
+
+    // Records the active project at the top of the recent list.
+    void rememberActive();
 
     // Runs until the user quits. Returns the process exit code.
     int run();
@@ -54,6 +59,7 @@ private:
 
     Canvas& currentCanvas();
     void bindHandler();
+    void afterProjectChange(bool fitView = true);  // rebind, fit the view, remember it
     void render();
     void setStatus(const std::string& text, bool error = false);
     void handle(InputResult result);
@@ -62,10 +68,18 @@ private:
     void showProjectMenu(int x, int y, bool onCanvas = false);
     void showNodeMenu(int x, int y);
     void showConnectionMenu(int x, int y);
+    void showStartPage();
+
     void openProjectDialog(int x, int y);
+    void recentDialog(int x, int y);
+    void openPathDialog();
+    void importDialog();
+    void exportDialog(int x, int y);
     void saveAsDialog();
+    void renameDialog();
     void switchProjectDialog(int x, int y);
     void languageDialog(int x, int y);
+    bool openPath(const std::string& path);
 };
 
 }  // namespace ic

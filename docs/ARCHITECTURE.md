@@ -4,7 +4,7 @@
 
 | Layer | Directory | Depends on | Platform |
 |---|---|---|---|
-| Utilities: UTF-8, JSON, clock, paths | `util/` | std only | any |
+| Utilities: UTF-8, JSON, XML, clock, paths | `util/` | std only | any |
 | Document model | `model/` | util | any |
 | Persistence | `storage/` | model, util | any |
 | Layout and rendering into a cell buffer | `view/` | model | any |
@@ -109,6 +109,35 @@ keys and menus can never behave differently.
   converted to cells only when drawn.
 - **Content is not translated.** Box names and texts are user data. Only the welcome project is
   built in the current language the first time it's created.
+
+## Import and export
+
+`storage/exchange` converts between a `Canvas` and the exchange formats. Every outline importer
+(Markdown, OPML, plain text) parses into the same small intermediate form:
+
+```text
+ .md / .opml / .txt ──parse──► Outline { title, items (tree), links (by title) }
+                                   │ buildCanvas
+                                   ▼
+                               Canvas ──arrangeTree──► laid-out boxes
+```
+
+so adding a format means writing one parser, and layout and link resolution are shared. Links
+are resolved by title (first match), and links to unknown titles are dropped. The bundle skips
+the outline: it is the project's own JSON content in one file and restores it exactly.
+
+`model/arrange` lays out a tree that has no geometry: leaves are sized to their text (clamped
+to a readable width), children are packed into rows inside their parent below its text, and
+roots into rows on the canvas, aiming at a roughly 2:1 shape. Reading order is kept, so the
+sidebar outline matches the source file.
+
+## Settings and recent projects
+
+`Settings` (`settings.json`) holds the language, the sidebar width and up to twelve recent
+projects, most recent first, compared by normalized path (case-insensitive on Windows). A
+project is moved to the front when it is opened, imported, saved as, switched to or left open
+on quit. At startup the first recent project that still exists is opened, and only on the very
+first launch the welcome project.
 
 ## Storage
 

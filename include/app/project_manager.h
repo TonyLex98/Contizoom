@@ -1,6 +1,7 @@
 #ifndef IC_PROJECT_MANAGER_H
 #define IC_PROJECT_MANAGER_H
 
+#include "storage/exchange.h"
 #include "storage/storage.h"
 
 #include <cstdint>
@@ -43,16 +44,26 @@ public:
     // any open project.
     std::string suggestPath(const std::string& name) const;
 
-    std::string createProject(const std::string& name = "Untitled");
+    // `path` defaults to a free name in the projects folder.
+    std::string createProject(const std::string& name = "Untitled", const std::string& path = "");
     std::string openProject(const std::string& path);  // "" on failure, see lastError()
     bool closeProject(const std::string& uuid);
     void closeAll();
     void switchTo(const std::string& uuid);
 
-    bool saveCurrent();                         // full save to the project's path
-    bool saveAs(const std::string& name);       // copy to a new project and continue there
-    bool revert();                              // reload the active project from disk
-    bool exportMarkdown(std::string& outPath);  // writes "<project>.md" next to the project
+    bool saveCurrent();                    // full save to the project's path
+    bool saveAs(const std::string& name);  // copy to a new project and continue there
+    bool revert();                         // reload the active project from disk
+    bool renameActive(const std::string& name);
+
+    // Writes the active project to `outPath` in another format.
+    bool exportActive(exchange::Format format, const std::string& outPath);
+    // Reads a Markdown / OPML / project bundle / text file into a new,
+    // saved project and makes it active. Returns its id, "" on failure.
+    std::string importProject(const std::string& filePath);
+
+    // Where exports go by default: Documents if there is one, else home.
+    static std::string defaultExportDir();
 
     void processAutoSave();
     void flushAll();

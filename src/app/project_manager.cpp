@@ -1,7 +1,6 @@
 #include "app/project_manager.h"
 #include "i18n/i18n.h"
 #include "model/canvas.h"
-#include "storage/markdown_export.h"
 #include "util/clock.h"
 #include "util/file.h"
 #include "util/path.h"
@@ -52,15 +51,28 @@ ProjectManager::~ProjectManager() {
     for (const auto& p : projects_) releaseLock(p);
 }
 
-std::string ProjectManager::defaultProjectsDir() {
+namespace {
+
+fs::path homeDir() {
     fs::path home;
 #ifdef _WIN32
     if (const wchar_t* h = _wgetenv(L"USERPROFILE")) home = h;
 #else
     if (const char* h = std::getenv("HOME")) home = h;
 #endif
-    if (home.empty()) home = ".";
-    const fs::path dir = home / ".infinite_canvas" / "projects";
+    return home.empty() ? fs::path(".") : home;
+}
+
+}  // namespace
+
+std::string ProjectManager::defaultExportDir() {
+    std::error_code ec;
+    const fs::path docs = homeDir() / "Documents";
+    return path::toUtf8(fs::is_directory(docs, ec) ? docs : homeDir());
+}
+
+std::string ProjectManager::defaultProjectsDir() {
+    const fs::path dir = homeDir() / ".infinite_canvas" / "projects";
     std::error_code ec;
     fs::create_directories(dir, ec);
     return path::toUtf8(dir);
@@ -186,7 +198,7 @@ void ProjectManager::setupAutoSave(const std::string& uuid) {
 // Project lifecycle
 // ====================================================================
 
-std::string ProjectManager::createProject(const std::string& name) {
+std::string ProjectManager::createProject(const std::string& name, const std::string& path) {
     auto canvas = std::make_unique<Canvas>();
     canvas->canvasName = name;
     canvas->createdAt = canvas->modifiedAt = clock::unixSeconds();
@@ -194,7 +206,7 @@ std::string ProjectManager::createProject(const std::string& name) {
     ProjectInfo info;
     info.uuid = Uuid::generate();
     info.name = name;
-    info.path = suggestPath(name);
+    info.path = path.empty() ? suggestPath(name) : path;
     info.createdAt = info.modifiedAt = canvas->createdAt;
 
     canvases_[info.uuid] = std::move(canvas);
@@ -308,19 +320,65 @@ bool ProjectManager::revert() {
     return ok;
 }
 
-bool ProjectManager::exportMarkdown(std::string& outPath) {
+bool ProjectManager::renameActive(const std::string& name) {
     ProjectInfo* info = activeProject();
     Canvas* canvas = activeCanvas();
-    if (!info || !canvas) return false;
+    if (!info || !canvas || name.empty()) return false;
+    info->name = name;
+    canvas->canvasName = name;
+    canvas->markConfigChanged();
+    return true;
+}
 
-    fs::path target = path::fromUtf8(info->path);
-    target.replace_extension(".md");
-    if (!file::write(target, ic::exportMarkdown(*canvas))) {
-        lastError_ = "cannot write " + path::toUtf8(target);
+bool ProjectManager::exportActive(exchange::Format format, const std::string& outPath) {
+    Canvas* canvas = activeCanvas();
+    if (!canvas) return false;
+    const fs::path target = path::fromUtf8(outPath);
+    std::error_code ec;
+    if (target.has_parent_path()) fs::create_directories(target.parent_path(), ec);
+    if (!file::write(target, exchange::exportAs(*canvas, format))) {
+        lastError_ = tr(Msg::ErrCannotWrite, {outPath});
         return false;
     }
-    outPath = path::toUtf8(target);
     return true;
+}
+
+std::string ProjectManager::importProject(const std::string& filePath) {
+    std::string content;
+    if (!file::read(path::fromUtf8(filePath), content)) {
+        lastError_ = tr(Msg::ErrCannotRead, {filePath});
+        return "";
+    }
+    auto canvas = std::make_unique<Canvas>();
+    std::string error;
+    if (!exchange::importText(filePath, content, *canvas, error)) {
+        lastError_ = filePath + ": " + error;
+        return "";
+    }
+    if (canvas->canvasName.empty()) canvas->canvasName = path::toUtf8(path::fromUtf8(filePath).stem());
+    const uint64_t now = clock::unixSeconds();
+    if (canvas->createdAt == 0) canvas->createdAt = now;
+    canvas->modifiedAt = now;
+
+    ProjectInfo info;
+    info.uuid = Uuid::generate();
+    info.name = canvas->canvasName;
+    info.path = suggestPath(info.name);
+    info.createdAt = canvas->createdAt;
+    info.modifiedAt = now;
+
+    canvases_[info.uuid] = std::move(canvas);
+    projects_.push_back(info);
+    setupAutoSave(info.uuid);
+    // Saved right away: an import is a new project on disk.
+    if (!writeFull(projects_.back(), *canvases_[info.uuid])) {
+        const std::string err = lastError_;
+        closeProject(info.uuid);
+        lastError_ = err;
+        return "";
+    }
+    switchTo(info.uuid);
+    return info.uuid;
 }
 
 void ProjectManager::processAutoSave() {

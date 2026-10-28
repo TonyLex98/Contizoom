@@ -75,7 +75,14 @@ picture on Linux.</sub>
   "unsaved" state to lose. Auto-save writes only what changed: one file per edited box, and
   `config.json` for the camera and links. Every file is written atomically. A lock file warns
   when the same project is open in two windows. Projects can be copied ("Save a copy as") and
-  exported to a Markdown outline.
+  renamed.
+- **Recent projects.** The program reopens the project you used last. "Recent projects" lists
+  the last twelve with the time they were opened; with nothing open, a start page offers them
+  along with New, Open, Open from path and Import.
+- **Import and export.** Markdown, OPML (the outliner interchange format, read and written by
+  most outliners and mind-map tools), a one-file JSON bundle of the whole project, and indented
+  plain text. Imported outlines are laid out automatically: boxes sized to their text, children
+  arranged inside their parents. "Picture of the view" saves the screen as text.
 
 ## Controls
 
@@ -122,16 +129,19 @@ cmake --build build
 ## Usage
 
 ```text
-infinite_canvas                      open the welcome project (created on first launch)
+infinite_canvas                      reopen the last project (the welcome project at first)
 infinite_canvas <project.canvas>     open a project
 infinite_canvas -n <name>            start a new project
+infinite_canvas --import <file>      import .md / .opml / .json / .txt as a new project
+infinite_canvas --export <out> <project.canvas>
+                                     export, format by extension: .md .opml .json .txt
 infinite_canvas --snapshot <out.txt> [project.canvas] [--size WxH]
                                      render a project (default: the demo) to a text file
 infinite_canvas --lang en|ru|zh|fr|es ...   interface language
 ```
 
-Projects are stored in `%USERPROFILE%\.infinite_canvas\projects`. The chosen language is kept in
-`%USERPROFILE%\.infinite_canvas\settings.json`.
+Projects are stored in `%USERPROFILE%\.infinite_canvas\projects`. The chosen language, the
+sidebar width and the recent list are kept in `%USERPROFILE%\.infinite_canvas\settings.json`.
 
 ## Languages
 
@@ -170,8 +180,18 @@ Name.canvas/
 - **Compatibility.** Readers accept any `1.x` file and ignore unknown fields, and files from the
   original `1.0` format still open. A damaged box file is skipped (and counted) instead of
   making the whole project unopenable.
-- **Export.** "Export as Markdown" writes `Name.md` next to the project: headings for boxes,
-  paragraphs for their text, and a list of the connections.
+- **Exchange formats.** The project directory is the working format; the others are for moving
+  content in and out:
+
+  | Format | Ext | Keeps |
+  |---|---|---|
+  | Markdown | `.md` | hierarchy (headings, then nested lists past level 5), text, connections |
+  | OPML 2.0 | `.opml` | hierarchy, text (as `_note`) |
+  | Bundle | `.json` | everything, positions included: an exact one-file copy |
+  | Plain text | `.txt` | hierarchy, as indented lines (tabs or spaces) |
+
+  The importer picks the format by extension and falls back to sniffing the content. Markdown
+  connections are read back from the "Connections" section in any of the five UI languages.
 
 ## Architecture
 
@@ -193,7 +213,8 @@ Name.canvas/
   (anchors, corners, connection routes) shared with hit-testing.
 - `input/`: `InputHandler`, which turns screen-space events into model edits, as a gesture
   state machine (click, drag, pan, resize, connect, area select).
-- `storage/`: `JsonStorage` on top of the in-house `util/json` parser.
+- `storage/`: `JsonStorage` on top of the in-house `util/json` parser, and `exchange` for
+  Markdown / OPML (`util/xml`) / bundle / text import and export.
 - `platform/`: the only Win32 code: raw console input, frame output and modal popups.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
@@ -201,7 +222,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 ## Tests
 
 `ctest` runs the unit tests in `tests/`: UTF-8 and JSON edge cases, hierarchy operations and
-damaged-data repair, storage round-trips (including legacy and corrupted projects), rendering,
+damaged-data repair, storage round-trips (including legacy and corrupted projects), import and
+export round-trips for every format, the automatic layout, the recent list, rendering,
 and full input scenarios driven through the real renderer layout (click, drag, rename, connect,
 zoom). CI builds with MSVC and GCC with warnings as errors, and runs the tests under
 AddressSanitizer and UndefinedBehaviorSanitizer.

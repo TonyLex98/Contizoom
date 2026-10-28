@@ -164,6 +164,81 @@ IC_MSG(PromptHelp,
        "Entrée : OK   Échap : annuler",
        "Intro: aceptar   Esc: cancelar")
 
+// ---- Recent, import, export -------------------------------------------
+IC_MSG(MenuRecent, "Recent projects...", "Последние проекты…", "最近的项目…", "Projets récents…", "Proyectos recientes…")
+IC_MSG(TitleRecent, "Recent projects", "Последние проекты", "最近的项目", "Projets récents", "Proyectos recientes")
+IC_MSG(RecentNone,
+       "No recent projects yet",
+       "Пока нет последних проектов",
+       "还没有最近的项目",
+       "Aucun projet récent",
+       "Aún no hay proyectos recientes")
+IC_MSG(TitleStart, "Start", "Начало", "开始", "Accueil", "Inicio")
+IC_MSG(MenuOpenPath, "Open from path...", "Открыть по пути…", "按路径打开…", "Ouvrir depuis un chemin…", "Abrir desde una ruta…")
+IC_MSG(TitleOpenPath,
+       "Path to a project folder (.canvas)",
+       "Путь к папке проекта (.canvas)",
+       "项目文件夹路径（.canvas）",
+       "Chemin du dossier du projet (.canvas)",
+       "Ruta de la carpeta del proyecto (.canvas)")
+IC_MSG(MenuImport, "Import...", "Импорт…", "导入…", "Importer…", "Importar…")
+IC_MSG(TitleImport,
+       "Import a file: .opml .md .json .txt",
+       "Импорт файла: .opml .md .json .txt",
+       "导入文件：.opml .md .json .txt",
+       "Importer un fichier : .opml .md .json .txt",
+       "Importar un archivo: .opml .md .json .txt")
+IC_MSG(MenuExportSub, "Export...", "Экспорт…", "导出…", "Exporter…", "Exportar…")
+IC_MSG(TitleExport, "Export as", "Экспортировать как", "导出为", "Exporter en", "Exportar como")
+IC_MSG(FormatMarkdown,
+       "Markdown outline (.md)",
+       "Структура в Markdown (.md)",
+       "Markdown 大纲（.md）",
+       "Plan Markdown (.md)",
+       "Esquema en Markdown (.md)")
+IC_MSG(FormatOpml,
+       "OPML for other outliners (.opml)",
+       "OPML для других аутлайнеров (.opml)",
+       "OPML，用于其他大纲软件（.opml）",
+       "OPML pour d'autres outils (.opml)",
+       "OPML para otros esquematizadores (.opml)")
+IC_MSG(FormatBundle,
+       "Whole project in one file (.json)",
+       "Весь проект одним файлом (.json)",
+       "整个项目存为单个文件（.json）",
+       "Projet complet en un fichier (.json)",
+       "Proyecto completo en un archivo (.json)")
+IC_MSG(FormatPlainText,
+       "Indented text outline (.txt)",
+       "Текстовый список с отступами (.txt)",
+       "缩进文本大纲（.txt）",
+       "Plan texte indenté (.txt)",
+       "Esquema de texto con sangría (.txt)")
+IC_MSG(FormatPicture,
+       "Picture of the current view (.txt)",
+       "Картинка текущего вида (.txt)",
+       "当前视图的文本图（.txt）",
+       "Image texte de la vue (.txt)",
+       "Imagen de texto de la vista (.txt)")
+IC_MSG(TitleExportPath, "Save to", "Сохранить в", "保存到", "Enregistrer dans", "Guardar en")
+IC_MSG(StatusImported, "Imported {0} ({1})", "Импортировано: {0} ({1})", "已导入 {0}（{1}）", "Importé : {0} ({1})", "Importado: {0} ({1})")
+IC_MSG(StatusImportFailed,
+       "Import failed: {0}",
+       "Не удалось импортировать: {0}",
+       "导入失败：{0}",
+       "Échec de l'import : {0}",
+       "Error al importar: {0}")
+IC_MSG(MenuRenameProject,
+       "Rename project...",
+       "Переименовать проект…",
+       "重命名项目…",
+       "Renommer le projet…",
+       "Renombrar proyecto…")
+IC_MSG(TitleRenameProject, "Project name", "Название проекта", "项目名称", "Nom du projet", "Nombre del proyecto")
+IC_MSG(StatusRenamed, "Renamed to {0}", "Переименовано: {0}", "已重命名为 {0}", "Renommé en {0}", "Renombrado a {0}")
+IC_MSG(ErrCannotRead, "cannot read {0}", "не удалось прочитать {0}", "无法读取 {0}", "impossible de lire {0}", "no se puede leer {0}")
+IC_MSG(ErrCannotWrite, "cannot write {0}", "не удалось записать {0}", "无法写入 {0}", "impossible d'écrire {0}", "no se puede escribir {0}")
+
 // ---- Status messages -------------------------------------------------
 IC_MSG(StatusSaved, "Saved to {0}", "Сохранено: {0}", "已保存到 {0}", "Enregistré dans {0}", "Guardado en {0}")
 IC_MSG(StatusSaveFailed,

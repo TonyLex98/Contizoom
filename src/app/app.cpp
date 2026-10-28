@@ -4,12 +4,15 @@
 #include "i18n/i18n.h"
 #include "model/canvas.h"
 #include "platform/popup_menu.h"
+#include "storage/exchange.h"
 #include "storage/json_storage.h"
 #include "util/clock.h"
+#include "util/file.h"
 #include "util/path.h"
 #include "view/labels.h"
 
 #include <algorithm>
+#include <cctype>
 #include <ctime>
 
 namespace ic {
@@ -22,10 +25,14 @@ enum MenuId {
     // Project
     kNew = 1,
     kOpen,
+    kRecent,
+    kOpenPath,
     kSwitch,
     kSave,
     kSaveAs,
+    kRenameProject,
     kRevert,
+    kImport,
     kExport,
     kClose,
     kUndo,
@@ -48,9 +55,12 @@ enum MenuId {
     kConnRename,
     kConnReverse,
     kConnDelete,
-    kConnStyle,       // opens the style submenu
-    kStyleBase = 100  // + ConnType
+    kConnStyle,         // opens the style submenu
+    kStyleBase = 100,   // + ConnType
+    kRecentBase = 200,  // + index in the recent list
+    kFormatBase = 300,  // + exchange::Format, kFormatPicture for the view picture
 };
+constexpr int kFormatPicture = 99;
 
 std::string formatTime(uint64_t unixSeconds) {
     if (unixSeconds == 0) return "";
@@ -66,6 +76,24 @@ std::string formatTime(uint64_t unixSeconds) {
     return buf;
 }
 
+// Paths typed or dropped into the prompt may come quoted.
+std::string cleanPath(std::string s) {
+    while (!s.empty() && (s.back() == ' ' || s.back() == '"' || s.back() == '\'')) s.pop_back();
+    size_t start = 0;
+    while (start < s.size() && (s[start] == ' ' || s[start] == '"' || s[start] == '\'')) ++start;
+    return s.substr(start);
+}
+
+// "My Plan" -> "My_Plan" for a file name.
+std::string fileStem(const std::string& name) {
+    std::string out;
+    for (const unsigned char c : name) {
+        if (c >= 0x80 || std::isalnum(c) || c == '-' || c == '_') out += static_cast<char>(c);
+        else if (c == ' ' || c == '.') out += '_';
+    }
+    return out.empty() ? "export" : out;
+}
+
 }  // namespace
 
 App::App() : projects_(std::make_unique<JsonStorage>()) {
@@ -76,14 +104,33 @@ App::~App() {
     projects_.flushAll();
 }
 
+// ====================================================================
+// Startup and the recent list
+// ====================================================================
+
 void App::openDemo() {
     // A fixed folder name, whatever the language, so there's only ever one.
     const std::string path = path::toUtf8(path::fromUtf8(ProjectManager::defaultProjectsDir()) / "Welcome.canvas");
     if (!projects_.openProject(path).empty()) return;
 
-    projects_.createProject(tr(Msg::DemoName));
+    projects_.createProject(tr(Msg::DemoName), path);
     buildDemoCanvas(*projects_.activeCanvas());
     if (!projects_.saveCurrent()) setStatus(tr(Msg::StatusDemoFailed, {projects_.lastError()}), true);
+}
+
+void App::openStartupProject() {
+    for (const auto& r : Settings::load().existingRecent()) {
+        if (!projects_.openProject(r.path).empty()) return;
+    }
+    openDemo();  // first launch (or every recent project is gone)
+}
+
+void App::rememberActive() {
+    const ProjectInfo* p = projects_.activeProject();
+    if (!p || !p->onDisk) return;
+    Settings settings = Settings::load();
+    settings.touchRecent(p->path, p->name, clock::unixSeconds());
+    settings.save();
 }
 
 Canvas& App::currentCanvas() {
@@ -118,6 +165,14 @@ void App::bindHandler() {
     ui_.prune(*c);
 }
 
+void App::afterProjectChange(bool fitView) {
+    bindHandler();
+    render();  // the camera fit needs the layout of a frame
+    if (handler_ && fitView) handler_->fitAll();
+    rememberActive();
+    if (std::string w = projects_.takeWarning(); !w.empty()) setStatus(w, true);
+}
+
 void App::setStatus(const std::string& text, bool error) {
     status_ = text;
     statusIsError_ = error;
@@ -142,13 +197,12 @@ void App::render() {
 int App::run() {
     if (!input_.setup()) return 1;
     renderer_.resize(input_.width(), input_.height());
-    bindHandler();
-    if (handler_ && !currentCanvas().allNodes().empty()) {
-        // First frame establishes the layout the camera fit needs.
-        render();
-        handler_->fitAll();
-    }
-    if (std::string w = projects_.takeWarning(); !w.empty()) setStatus(w, true);
+    // A project that was saved before reopens with its own camera, so the
+    // user continues where they left off.
+    if (const ProjectInfo* p = projects_.activeProject()) afterProjectChange(!p->onDisk);
+    else bindHandler();
+    render();
+    if (!handler_) showStartPage();
     render();
 
     running_ = true;
@@ -189,7 +243,7 @@ int App::run() {
                 handle(result);
             }
         } else if (ev->type == InputType::MouseDown) {
-            showProjectMenu(ev->mouseX, ev->mouseY);
+            showStartPage();
         } else if (ev->type == InputType::KeyPress && ev->mods.ctrl) {
             if (ev->key == 'N') handle(InputResult::RequestNew);
             if (ev->key == 'Q') handle(InputResult::RequestQuit);
@@ -198,6 +252,7 @@ int App::run() {
     }
 
     projects_.flushAll();
+    rememberActive();  // so the next start opens this project
     input_.restore();
     return 0;
 }
@@ -206,8 +261,12 @@ void App::handle(InputResult result) {
     switch (result) {
         case InputResult::RequestQuit: running_ = false; break;
         case InputResult::RequestSave:
-            if (projects_.saveCurrent()) setStatus(tr(Msg::StatusSaved, {projects_.activeProject()->displayPath()}));
-            else setStatus(tr(Msg::StatusSaveFailed, {projects_.lastError()}), true);
+            if (projects_.saveCurrent()) {
+                setStatus(tr(Msg::StatusSaved, {projects_.activeProject()->displayPath()}));
+                rememberActive();
+            } else {
+                setStatus(tr(Msg::StatusSaveFailed, {projects_.lastError()}), true);
+            }
             break;
         case InputResult::RequestNew:
             projects_.createProject(tr(Msg::DefaultProject));
@@ -228,7 +287,7 @@ void App::handle(InputResult result) {
 }
 
 // ====================================================================
-// Menus
+// Context menus
 // ====================================================================
 
 void App::showContextMenu() {
@@ -322,14 +381,19 @@ void App::showProjectMenu(int x, int y, bool onCanvas) {
     const std::vector<MenuItem> projectItems = {
         MenuItem::item(kNew, tr(Msg::MenuNewProject), "Ctrl+N"),
         MenuItem::item(kOpen, tr(Msg::MenuOpen)),
+        MenuItem::item(kRecent, tr(Msg::MenuRecent)),
+        MenuItem::item(kOpenPath, tr(Msg::MenuOpenPath)),
         MenuItem::item(kSwitch, tr(Msg::MenuSwitch), "", projects_.projects().size() > 1),
         MenuItem::line(),
         MenuItem::item(kSave, tr(Msg::MenuSave), "Ctrl+S", open),
         MenuItem::item(kSaveAs, tr(Msg::MenuSaveCopy), "", open),
+        MenuItem::item(kRenameProject, tr(Msg::MenuRenameProject), "", open),
         MenuItem::item(kRevert, tr(Msg::MenuRevert), "", open),
-        MenuItem::item(kExport, tr(Msg::MenuExport), "", open),
-        MenuItem::item(kClose, tr(Msg::MenuClose), "", open),
         MenuItem::line(),
+        MenuItem::item(kImport, tr(Msg::MenuImport)),
+        MenuItem::item(kExport, tr(Msg::MenuExportSub), "", open),
+        MenuItem::line(),
+        MenuItem::item(kClose, tr(Msg::MenuClose), "", open),
         MenuItem::item(kUndo, tr(Msg::MenuUndo), "Ctrl+Z", handler_ && handler_->canUndo()),
         MenuItem::item(kRedo, tr(Msg::MenuRedo), "Ctrl+Y", handler_ && handler_->canRedo()),
         MenuItem::item(kFit, tr(Msg::MenuFit), "0", open),
@@ -345,9 +409,12 @@ void App::showProjectMenu(int x, int y, bool onCanvas) {
         case kNewBoxHere: handler_->perform(Action::NewBoxHere); break;
         case kNew: handle(InputResult::RequestNew); break;
         case kOpen: openProjectDialog(x, y); break;
+        case kRecent: recentDialog(x, y); break;
+        case kOpenPath: openPathDialog(); break;
         case kSwitch: switchProjectDialog(x, y); break;
         case kSave: handle(InputResult::RequestSave); break;
         case kSaveAs: saveAsDialog(); break;
+        case kRenameProject: renameDialog(); break;
         case kRevert:
             projects_.flushAll();
             if (projects_.revert()) {
@@ -358,15 +425,16 @@ void App::showProjectMenu(int x, int y, bool onCanvas) {
                 setStatus(tr(Msg::StatusRevertFailed, {projects_.lastError()}), true);
             }
             break;
-        case kExport: {
-            std::string out;
-            if (projects_.exportMarkdown(out)) setStatus(tr(Msg::StatusExported, {out}));
-            else setStatus(tr(Msg::StatusExportFailed, {projects_.lastError()}), true);
-            break;
-        }
+        case kImport: importDialog(); break;
+        case kExport: exportDialog(x, y); break;
         case kClose:
+            rememberActive();
             projects_.closeProject(projects_.activeProject()->uuid);
             bindHandler();
+            if (!handler_) {
+                render();
+                showStartPage();
+            }
             break;
         case kUndo: handler_->perform(Action::Undo); break;
         case kRedo: handler_->perform(Action::Redo); break;
@@ -377,6 +445,195 @@ void App::showProjectMenu(int x, int y, bool onCanvas) {
         case kQuit: handle(InputResult::RequestQuit); break;
         default: break;
     }
+}
+
+// The screen shown when no project is open: recent projects first, then
+// the ways to start something.
+void App::showStartPage() {
+    const auto recent = Settings::load().existingRecent();
+    std::vector<MenuItem> items;
+    for (size_t i = 0; i < recent.size() && i < 9; ++i) {
+        items.push_back(MenuItem::item(kRecentBase + static_cast<int>(i), recent[i].name, formatTime(recent[i].openedAt)));
+    }
+    if (recent.empty()) items.push_back(MenuItem::item(0, tr(Msg::RecentNone), "", false));
+    items.push_back(MenuItem::line());
+    items.push_back(MenuItem::item(kNew, tr(Msg::MenuNewProject), "Ctrl+N"));
+    items.push_back(MenuItem::item(kOpen, tr(Msg::MenuOpen)));
+    items.push_back(MenuItem::item(kOpenPath, tr(Msg::MenuOpenPath)));
+    items.push_back(MenuItem::item(kImport, tr(Msg::MenuImport)));
+    items.push_back(MenuItem::item(kLanguage, tr(Msg::MenuLanguage), i18n::nativeName(i18n::language())));
+    items.push_back(MenuItem::line());
+    items.push_back(MenuItem::item(kQuit, tr(Msg::MenuQuit), "Ctrl+Q"));
+
+    PopupMenu menu(input_, output_);
+    const int w = renderer_.width(), h = renderer_.height();
+    const int choice = menu.choose(tr(Msg::TitleStart), items, w / 2 - 22, h / 2 - 8, w, h);
+    if (choice >= kRecentBase && choice < kRecentBase + static_cast<int>(recent.size())) {
+        openPath(recent[static_cast<size_t>(choice - kRecentBase)].path);
+        return;
+    }
+    switch (choice) {
+        case kNew: handle(InputResult::RequestNew); break;
+        case kOpen: openProjectDialog(w / 2 - 22, h / 2 - 8); break;
+        case kOpenPath: openPathDialog(); break;
+        case kImport: importDialog(); break;
+        case kLanguage: languageDialog(w / 2 - 22, h / 2 - 8); break;
+        case kQuit: handle(InputResult::RequestQuit); break;
+        default: break;
+    }
+}
+
+// ====================================================================
+// Dialogs
+// ====================================================================
+
+bool App::openPath(const std::string& path) {
+    if (projects_.openProject(path).empty()) {
+        setStatus(tr(Msg::StatusOpenFailed, {projects_.lastError()}), true);
+        return false;
+    }
+    afterProjectChange();
+    setStatus(tr(Msg::StatusOpened, {projects_.activeProject()->name}));
+    return true;
+}
+
+void App::openProjectDialog(int x, int y) {
+    const auto list = projects_.listSavedProjects();
+    if (list.empty()) {
+        setStatus(tr(Msg::StatusNoSaved, {ProjectManager::defaultProjectsDir()}), true);
+        return;
+    }
+    std::vector<MenuItem> items;
+    for (size_t i = 0; i < list.size(); ++i) {
+        std::string hint = formatTime(list[i].modifiedAt);
+        if (list[i].nodeCount >= 0) hint += "  " + tr(Msg::Boxes, {std::to_string(list[i].nodeCount)});
+        items.push_back(MenuItem::item(static_cast<int>(i), list[i].name, hint));
+    }
+    render();  // clear the previous menu
+    PopupMenu menu(input_, output_);
+    const int choice = menu.choose(tr(Msg::TitleOpen), items, x, y, renderer_.width(), renderer_.height());
+    if (choice >= 0) openPath(list[static_cast<size_t>(choice)].path);
+}
+
+void App::recentDialog(int x, int y) {
+    const auto recent = Settings::load().existingRecent();
+    std::vector<MenuItem> items;
+    for (size_t i = 0; i < recent.size(); ++i) {
+        items.push_back(MenuItem::item(static_cast<int>(i), recent[i].name, formatTime(recent[i].openedAt)));
+    }
+    if (items.empty()) items.push_back(MenuItem::item(-1, tr(Msg::RecentNone), "", false));
+    render();
+    PopupMenu menu(input_, output_);
+    const int choice = menu.choose(tr(Msg::TitleRecent), items, x, y, renderer_.width(), renderer_.height());
+    if (choice >= 0) openPath(recent[static_cast<size_t>(choice)].path);
+}
+
+void App::openPathDialog() {
+    render();
+    PopupMenu menu(input_, output_);
+    auto path = menu.prompt(tr(Msg::TitleOpenPath), ProjectManager::defaultProjectsDir() + "\\",
+                            renderer_.width(), renderer_.height());
+    if (path && !cleanPath(*path).empty()) openPath(cleanPath(*path));
+}
+
+void App::importDialog() {
+    render();
+    PopupMenu menu(input_, output_);
+    auto path = menu.prompt(tr(Msg::TitleImport), ProjectManager::defaultExportDir() + "\\", renderer_.width(),
+                            renderer_.height());
+    if (!path || cleanPath(*path).empty()) return;
+
+    if (projects_.importProject(cleanPath(*path)).empty()) {
+        setStatus(tr(Msg::StatusImportFailed, {projects_.lastError()}), true);
+        return;
+    }
+    afterProjectChange();
+    setStatus(tr(Msg::StatusImported, {projects_.activeProject()->name,
+                                       tr(Msg::Boxes, {std::to_string(currentCanvas().allNodes().size())})}));
+}
+
+void App::exportDialog(int x, int y) {
+    const ProjectInfo* p = projects_.activeProject();
+    if (!p) return;
+    const std::vector<MenuItem> items = {
+        MenuItem::item(kFormatBase + static_cast<int>(exchange::Format::Markdown), tr(Msg::FormatMarkdown)),
+        MenuItem::item(kFormatBase + static_cast<int>(exchange::Format::Opml), tr(Msg::FormatOpml)),
+        MenuItem::item(kFormatBase + static_cast<int>(exchange::Format::Bundle), tr(Msg::FormatBundle)),
+        MenuItem::item(kFormatBase + static_cast<int>(exchange::Format::PlainText), tr(Msg::FormatPlainText)),
+        MenuItem::item(kFormatBase + kFormatPicture, tr(Msg::FormatPicture)),
+    };
+    render();
+    PopupMenu menu(input_, output_);
+    const int choice = menu.choose(tr(Msg::TitleExport), items, x, y, renderer_.width(), renderer_.height());
+    if (choice < kFormatBase) return;
+    const int formatId = choice - kFormatBase;
+
+    const std::string stem = fileStem(p->name);
+    const std::string suggested =
+        path::toUtf8(path::fromUtf8(ProjectManager::defaultExportDir()) /
+                     path::fromUtf8(formatId == kFormatPicture
+                                        ? stem + "-view.txt"
+                                        : stem + exchange::extension(static_cast<exchange::Format>(formatId))));
+    render();
+    auto target = menu.prompt(tr(Msg::TitleExportPath), suggested, renderer_.width(), renderer_.height());
+    if (!target || cleanPath(*target).empty()) return;
+    const std::string out = cleanPath(*target);
+
+    bool ok = false;
+    if (formatId == kFormatPicture) {
+        render();  // the picture is the canvas as it is on screen, without the menus
+        ok = file::write(path::fromUtf8(out), renderer_.buffer().toText());
+        if (!ok) setStatus(tr(Msg::StatusExportFailed, {tr(Msg::ErrCannotWrite, {out})}), true);
+    } else {
+        ok = projects_.exportActive(static_cast<exchange::Format>(formatId), out);
+        if (!ok) setStatus(tr(Msg::StatusExportFailed, {projects_.lastError()}), true);
+    }
+    if (ok) setStatus(tr(Msg::StatusExported, {out}));
+}
+
+void App::saveAsDialog() {
+    ProjectInfo* p = projects_.activeProject();
+    if (!p) return;
+
+    render();
+    PopupMenu menu(input_, output_);
+    auto name = menu.prompt(tr(Msg::TitleSaveCopy), tr(Msg::CopyName, {p->name}), renderer_.width(),
+                            renderer_.height());
+    if (!name || name->empty()) return;
+
+    if (projects_.saveAs(*name)) {
+        setStatus(tr(Msg::StatusNowIn, {projects_.activeProject()->displayPath()}));
+        rememberActive();
+    } else {
+        setStatus(tr(Msg::StatusSaveFailed, {projects_.lastError()}), true);
+    }
+}
+
+void App::renameDialog() {
+    ProjectInfo* p = projects_.activeProject();
+    if (!p) return;
+    render();
+    PopupMenu menu(input_, output_);
+    auto name = menu.prompt(tr(Msg::TitleRenameProject), p->name, renderer_.width(), renderer_.height());
+    if (!name || name->empty() || *name == p->name) return;
+    projects_.renameActive(*name);
+    rememberActive();
+    setStatus(tr(Msg::StatusRenamed, {*name}));
+}
+
+void App::switchProjectDialog(int x, int y) {
+    std::vector<MenuItem> items;
+    const auto& list = projects_.projects();
+    for (size_t i = 0; i < list.size(); ++i) {
+        items.push_back(MenuItem::item(static_cast<int>(i), list[i].name, list[i].displayPath()));
+    }
+    render();
+    PopupMenu menu(input_, output_);
+    const int choice = menu.choose(tr(Msg::TitleSwitch), items, x, y, renderer_.width(), renderer_.height());
+    if (choice < 0) return;
+    projects_.switchTo(list[static_cast<size_t>(choice)].uuid);
+    bindHandler();
+    rememberActive();
 }
 
 void App::languageDialog(int x, int y) {
@@ -397,61 +654,6 @@ void App::languageDialog(int x, int y) {
     settings.language = i18n::code(lang);
     settings.save();
     setStatus(tr(Msg::StatusLanguage, {i18n::nativeName(lang)}));
-}
-
-void App::openProjectDialog(int x, int y) {
-    const auto list = projects_.listSavedProjects();
-    if (list.empty()) {
-        setStatus(tr(Msg::StatusNoSaved, {ProjectManager::defaultProjectsDir()}), true);
-        return;
-    }
-    std::vector<MenuItem> items;
-    for (size_t i = 0; i < list.size(); ++i) {
-        std::string hint = formatTime(list[i].modifiedAt);
-        if (list[i].nodeCount >= 0) hint += "  " + tr(Msg::Boxes, {std::to_string(list[i].nodeCount)});
-        items.push_back(MenuItem::item(static_cast<int>(i), list[i].name, hint));
-    }
-    render();  // clear the previous menu
-    PopupMenu menu(input_, output_);
-    const int choice = menu.choose(tr(Msg::TitleOpen), items, x, y, renderer_.width(), renderer_.height());
-    if (choice < 0) return;
-
-    if (projects_.openProject(list[static_cast<size_t>(choice)].path).empty()) {
-        setStatus(tr(Msg::StatusOpenFailed, {projects_.lastError()}), true);
-        return;
-    }
-    bindHandler();
-    render();
-    if (handler_) handler_->fitAll();
-    setStatus(tr(Msg::StatusOpened, {projects_.activeProject()->name}));
-}
-
-void App::saveAsDialog() {
-    ProjectInfo* p = projects_.activeProject();
-    if (!p) return;
-
-    render();
-    PopupMenu menu(input_, output_);
-    auto name = menu.prompt(tr(Msg::TitleSaveCopy), tr(Msg::CopyName, {p->name}), renderer_.width(),
-                            renderer_.height());
-    if (!name || name->empty()) return;
-
-    if (projects_.saveAs(*name)) setStatus(tr(Msg::StatusNowIn, {projects_.activeProject()->displayPath()}));
-    else setStatus(tr(Msg::StatusSaveFailed, {projects_.lastError()}), true);
-}
-
-void App::switchProjectDialog(int x, int y) {
-    std::vector<MenuItem> items;
-    const auto& list = projects_.projects();
-    for (size_t i = 0; i < list.size(); ++i) {
-        items.push_back(MenuItem::item(static_cast<int>(i), list[i].name, list[i].displayPath()));
-    }
-    render();
-    PopupMenu menu(input_, output_);
-    const int choice = menu.choose(tr(Msg::TitleSwitch), items, x, y, renderer_.width(), renderer_.height());
-    if (choice < 0) return;
-    projects_.switchTo(list[static_cast<size_t>(choice)].uuid);
-    bindHandler();
 }
 
 }  // namespace ic

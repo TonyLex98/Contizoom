@@ -51,6 +51,11 @@ A full review and rework of the codebase.
   only the changed boxes. A camera move used to rewrite every box file.
 
 ### Added
+- Import and export: Markdown, OPML 2.0, a one-file JSON bundle and indented plain text, from
+  the menu and with `--import` / `--export`. Imported outlines are laid out automatically.
+  "Picture of the view" saves the current screen as text.
+- Recent projects: the program reopens the last project instead of the welcome project, a
+  "Recent projects" list, a start page when nothing is open, "Open from path" and "Rename".
 - Interface in English, Russian, Chinese, French and Spanish: one compile-checked message
   catalog, runtime switching from the menu, `--lang`, a saved choice, and system language
   detection. The welcome project is created in the chosen language. Double-width (CJK)
@@ -66,8 +71,8 @@ A full review and rework of the codebase.
   visible ancestors. A click on a line inside a box selects the line, not the box.
 - Context menus for boxes, connections and the project.
 - A project lock that warns when the same project is open in two windows, "Save a copy as",
-  Markdown export, and an Open list showing the date and number of boxes.
-- Unit tests (80 cases), a CMake test target, and CI on MSVC, GCC and Clang with sanitizers.
+  and an Open list showing the date and number of boxes.
+- Unit tests (100 cases), a CMake test target, and CI on MSVC, GCC and Clang with sanitizers.
 
 ## 0.1.0
 
