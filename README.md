@@ -69,7 +69,11 @@ picture on Linux.</sub>
 - **Five languages**: English, Русский, 中文, Français, Español. The language follows the system
   and can be switched at runtime from the menu or with `--lang`. Chinese text is laid out in
   double-width console cells.
-- **Undo / redo** for every edit (`Ctrl+Z` / `Ctrl+Y`). A drag or resize is one step.
+- **Undo / redo** for every edit (`Ctrl+Z` / `Ctrl+Y` or `Ctrl+Shift+Z`): moving, resizing,
+  creating, deleting, framing, nesting, renaming, text, and every connection change. A drag is
+  one step, and a new box together with the name typed into it is one step. The status bar
+  says what was undone, and the boxes it touched are selected. While typing, `Ctrl+Z` takes
+  back a word at a time. `Esc` during a drag puts everything back.
 - **Context menus.** Right-click a box, a line or empty canvas.
 - **Safe storage.** A project is saved automatically from its first edit on, so there is no
   "unsaved" state to lose. Auto-save writes only what changed: one file per edited box, and

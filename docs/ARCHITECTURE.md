@@ -80,12 +80,25 @@ move, so the child doesn't move twice.
 Letter shortcuts use virtual key codes, so they work on any keyboard layout. Typed text uses
 the character, with UTF-16 surrogate pairs combined into code points in `ConsoleInput`.
 
-Every edit goes through `InputHandler::edit()`, which takes a snapshot before the change and
-records it in `History` if the document actually changed. A drag or resize takes its snapshot
-when the gesture starts and records it when the gesture ends, so each one is a single undo
-step. Snapshots are the compact JSON of the content (see `storage/document_json`). Documents
+Every edit goes through `InputHandler::edit(label, change)`, which takes a snapshot before the
+change and records it in `History` under a label ("move", "rename"...) if the document actually
+changed. Snapshots are the compact JSON of the content (see `storage/document_json`). Documents
 are small, so storing whole snapshots is cheap, and it makes every action undoable exactly,
-with no inverse operation for each command.
+with no inverse operation for each command. The rules around it:
+
+- **Gestures are one step.** A drag or resize snapshots when it starts and records when it
+  ends. A gesture whose mouse-up never arrives (released outside the window) is completed by
+  the next click or key, so it is never lost or merged into the next step; `Esc` mid-drag
+  rolls back to the snapshot instead.
+- **A new box and its name are one step.** The name typed right after `N` is folded into the
+  "new box" step, as long as `History::version()` shows nothing was recorded in between.
+- **Typing has its own undo.** An open editor keeps a word-grouped `TextUndo`; once it is empty,
+  `Ctrl+Z` closes the editor and undoes the last canvas step.
+- **The project name is not content.** Snapshots leave it out, so undoing a move after a rename
+  or "Save a copy as" doesn't bring the old name back.
+- **Feedback.** After an undo the boxes that differ between the two snapshots are selected and
+  the status bar names the step.
+- **Bounded.** At most 200 steps and about 64 MB; the oldest go first.
 
 Commands are also exposed as `InputHandler::perform(Action)`, which the context menus use, so
 keys and menus can never behave differently.

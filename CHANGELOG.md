@@ -65,14 +65,18 @@ A full review and rework of the codebase.
 - A JSON parser and serializer (`util/json`), and UTF-8 utilities.
 - Project format 1.1 with an explicit version. Format 1.0 files still open.
 - `--snapshot` headless rendering, plus `--version` and `--help`.
-- Undo/redo for every edit (`Ctrl+Z` / `Ctrl+Y`), kept per open project.
+- Undo/redo for every edit (`Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z`), kept per open project: the
+  status bar names what was undone and the affected boxes are selected; a new box and its name
+  are one step; typing in an editor undoes word by word; `Esc` cancels a drag; a drag whose
+  mouse-up was lost is still recorded; undo no longer restores an old project name; memory use
+  is bounded. A new box's name is a placeholder that typing replaces.
 - Connections: a live preview while dragging, styles (`T`), reverse (`V`) and rename (`F2`).
   Duplicate links are prevented, and links to boxes collapsed by zoom are shown between their
   visible ancestors. A click on a line inside a box selects the line, not the box.
 - Context menus for boxes, connections and the project.
 - A project lock that warns when the same project is open in two windows, "Save a copy as",
   and an Open list showing the date and number of boxes.
-- Unit tests (100 cases), a CMake test target, and CI on MSVC, GCC and Clang with sanitizers.
+- Unit tests (111 cases), a CMake test target, and CI on MSVC, GCC and Clang with sanitizers.
 
 ## 0.1.0
 

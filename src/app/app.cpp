@@ -242,6 +242,9 @@ int App::run() {
             } else {
                 handle(result);
             }
+            if (handler_) {
+                if (std::string s = handler_->takeStatus(); !s.empty()) setStatus(s);
+            }
         } else if (ev->type == InputType::MouseDown) {
             showStartPage();
         } else if (ev->type == InputType::KeyPress && ev->mods.ctrl) {

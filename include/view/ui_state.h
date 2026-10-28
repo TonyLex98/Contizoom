@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace ic {
 
@@ -37,6 +38,18 @@ struct AreaSelection {
     double bottom() const { return std::max(startY, endY); }
 };
 
+// Undo inside an open editor (Ctrl+Z while typing). Typing is grouped into
+// words, so one Ctrl+Z takes back a word, not a letter.
+struct TextUndo {
+    struct State {
+        std::string text;
+        int row = 0, col = 0;
+    };
+    enum class Kind { None, Insert, Delete };
+    std::vector<State> undo, redo;
+    Kind last = Kind::None;
+};
+
 // In-place editor for a node's name (header) or text (body).
 struct NodeEditor {
     bool active = false;
@@ -45,6 +58,10 @@ struct NodeEditor {
     std::string text;
     int cursorCol = 0;  // in code points
     int cursorRow = 0;
+    // The text is a default ("New box") that the first typed character or
+    // Backspace replaces as a whole, like selected text.
+    bool placeholder = false;
+    TextUndo history;
 };
 
 // In-place editor for a connection's label, drawn at a screen position
@@ -56,6 +73,7 @@ struct ConnectionEditor {
     int cursorCol = 0;
     int screenX = 0;
     int screenY = 0;
+    TextUndo history;
 };
 
 enum class ResizeCorner { None, TopLeft, TopRight, BottomLeft, BottomRight };

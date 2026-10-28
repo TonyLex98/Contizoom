@@ -121,6 +121,7 @@ if(IC_BUILD_TESTS)
         tests/test_project.cpp
         tests/test_i18n.cpp
         tests/test_exchange.cpp
+        tests/test_undo.cpp
     )
     target_link_libraries(ic_tests PRIVATE infinite_canvas_core)
     add_test(NAME unit_tests COMMAND ic_tests)

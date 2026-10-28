@@ -78,16 +78,97 @@ InputResult InputHandler::process(const InputEvent& e) {
 // Undo
 // ====================================================================
 
-void InputHandler::edit(const std::function<void()>& change) {
+void InputHandler::edit(Msg label, const std::function<void()>& change) {
     const std::string before = history_.snapshot(canvas_);
     change();
-    history_.record(before, canvas_);
+    history_.record(before, canvas_, label);
+}
+
+void InputHandler::undoRedo(bool redo) {
+    finishGesture();
+    if (!(redo ? history_.redo(canvas_) : history_.undo(canvas_))) {
+        status_ = tr(redo ? Msg::StatusNothingToRedo : Msg::StatusNothingToUndo);
+        return;
+    }
+    afterContentReplaced();
+    // Select what the step touched, so it's visible what changed.
+    ui_.clearSelection();
+    for (const auto& uuid : history_.lastChanged()) {
+        if (canvas_.getNode(uuid)) ui_.selected.insert(uuid);
+    }
+    status_ = tr(redo ? Msg::StatusRedone : Msg::StatusUndone, {tr(history_.lastLabel())});
+}
+
+std::string InputHandler::takeStatus() {
+    std::string s;
+    s.swap(status_);
+    return s;
 }
 
 void InputHandler::afterContentReplaced() {
     ui_.nodeEditor = NodeEditor{};
     ui_.connEditor = ConnectionEditor{};
+    ui_.connectionSource.clear();
+    ui_.connectPreview = false;
+    newBox_.clear();
     ui_.prune(canvas_);
+}
+
+void InputHandler::finishGesture() {
+    switch (gesture_) {
+        case Gesture::DragNodes: {
+            std::set<std::string> parents;
+            for (const auto& [uuid, _] : drag_) {
+                if (auto n = canvas_.getNode(uuid)) {
+                    canvas_.markChanged(uuid);
+                    if (!n->parentId.empty()) parents.insert(n->parentId);
+                }
+            }
+            for (const auto& p : parents) canvas_.resolveOverlaps(p);
+            history_.record(gestureSnapshot_, canvas_, Msg::StepMove);
+            drag_.clear();
+            break;
+        }
+        case Gesture::Resize:
+            if (auto n = canvas_.getNode(resize_.uuid)) {
+                canvas_.markChanged(n->uuid);
+                if (!n->parentId.empty()) canvas_.resolveOverlaps(n->parentId);
+            }
+            history_.record(gestureSnapshot_, canvas_, Msg::StepResize);
+            resize_ = ResizeStart{};
+            break;
+        case Gesture::Connect:
+            ui_.connectionSource.clear();
+            ui_.connectPreview = false;
+            connectFromAnchor_ = Anchor{};
+            break;
+        case Gesture::AreaSelect: ui_.area.clear(); break;
+        case Gesture::Divider: ui_.draggingDivider = false; break;
+        case Gesture::Pan: canvas_.markConfigChanged(); break;
+        case Gesture::PendingClick:
+        case Gesture::None: break;
+    }
+    gesture_ = Gesture::None;
+}
+
+void InputHandler::cancelGesture() {
+    if (gesture_ == Gesture::DragNodes || gesture_ == Gesture::Resize) {
+        history_.rollback(canvas_, gestureSnapshot_);
+        drag_.clear();
+        resize_ = ResizeStart{};
+        ui_.prune(canvas_);
+        gesture_ = Gesture::None;
+        return;
+    }
+    finishGesture();
+}
+
+void InputHandler::boxCreated(const std::string& uuid) {
+    newBox_ = uuid;
+    newBoxVersion_ = history_.version();
+    select(uuid, false);
+    startEditing(uuid, true);
+    ui_.nodeEditor.placeholder = true;
 }
 
 // ====================================================================
@@ -212,6 +293,15 @@ void InputHandler::updateHover(int x, int y) {
 // ====================================================================
 
 InputResult InputHandler::onKey(const InputEvent& e) {
+    if (gesture_ == Gesture::DragNodes || gesture_ == Gesture::Resize) {
+        // The mouse is still down: Escape cancels the drag, any other key
+        // completes it first so its undo step comes before the key's.
+        if (e.key == key::Escape) {
+            cancelGesture();
+            return InputResult::Handled;
+        }
+        finishGesture();
+    }
     if (ui_.connEditor.active) {
         connectionEditorKey(e);
         return InputResult::Handled;
@@ -302,7 +392,7 @@ void InputHandler::perform(Action action) {
                 perform(Action::ConnectionDelete);
                 break;
             }
-            edit([&] {
+            edit(Msg::StepDelete, [&] {
                 for (const auto& uuid : topLevelSelection()) canvas_.removeSubtree(uuid);
             });
             ui_.prune(canvas_);
@@ -311,17 +401,17 @@ void InputHandler::perform(Action action) {
             const auto members = topLevelSelection();
             if (members.empty()) break;
             std::string frame;
-            edit([&] { frame = canvas_.createFrame(members, tr(Msg::DefaultFrame)); });
+            edit(Msg::StepFrame, [&] { frame = canvas_.createFrame(members, tr(Msg::DefaultFrame)); });
             if (!frame.empty()) select(frame, false);
             break;
         }
         case Action::Promote:
-            edit([&] {
+            edit(Msg::StepPromote, [&] {
                 for (const auto& uuid : topLevelSelection()) canvas_.promoteNode(uuid);
             });
             break;
         case Action::Demote:
-            edit([&] {
+            edit(Msg::StepDemote, [&] {
                 for (const auto& uuid : topLevelSelection()) canvas_.demoteNode(uuid);
             });
             break;
@@ -338,7 +428,7 @@ void InputHandler::perform(Action action) {
             break;
         case Action::ConnectionReverse:
             if (conn) {
-                edit([&] {
+                edit(Msg::StepConnReverse, [&] {
                     std::swap(conn->fromUuid, conn->toUuid);
                     std::swap(conn->fromAnchor, conn->toAnchor);
                     canvas_.markConfigChanged();
@@ -350,24 +440,20 @@ void InputHandler::perform(Action action) {
             break;
         case Action::ConnectionDelete:
             if (conn) {
-                edit([&] { canvas_.removeConnection(conn->uuid); });
+                edit(Msg::StepConnDelete, [&] { canvas_.removeConnection(conn->uuid); });
                 ui_.selectedConnection.clear();
             }
             break;
 
-        case Action::Undo:
-            if (history_.undo(canvas_)) afterContentReplaced();
-            break;
-        case Action::Redo:
-            if (history_.redo(canvas_)) afterContentReplaced();
-            break;
+        case Action::Undo: undoRedo(false); break;
+        case Action::Redo: undoRedo(true); break;
     }
 }
 
 void InputHandler::setConnectionStyle(ConnType type) {
     auto conn = canvas_.getConnection(ui_.selectedConnection);
     if (!conn || conn->type == type) return;
-    edit([&] {
+    edit(Msg::StepConnStyle, [&] {
         conn->type = type;
         canvas_.markConfigChanged();
     });
@@ -423,16 +509,14 @@ void InputHandler::createBox() {
     }
 
     std::string uuid;
-    edit([&] {
+    edit(Msg::StepNewBox, [&] {
         uuid = canvas_.createNode("", r, tr(Msg::DefaultBox), parentId);
         if (!uuid.empty() && !parentId.empty()) {
             canvas_.expandParentToFit(uuid, 2.0);
             canvas_.resolveOverlaps(parentId);
         }
     });
-    if (uuid.empty()) return;
-    select(uuid, false);
-    startEditing(uuid, true);
+    if (!uuid.empty()) boxCreated(uuid);
 }
 
 // A new box with its top-left at a screen cell: a root box on empty canvas,
@@ -447,16 +531,14 @@ void InputHandler::createBoxAt(int screenX, int screenY, const std::string& pare
         r.y = wy - origin.y;
     }
     std::string uuid;
-    edit([&] {
+    edit(Msg::StepNewBox, [&] {
         uuid = canvas_.createNode("", r, tr(Msg::DefaultBox), parent ? parentId : std::string());
         if (!uuid.empty() && parent) {
             canvas_.expandParentToFit(uuid, 2.0);
             canvas_.resolveOverlaps(parentId);
         }
     });
-    if (uuid.empty()) return;
-    select(uuid, false);
-    startEditing(uuid, true);
+    if (!uuid.empty()) boxCreated(uuid);
 }
 
 // ====================================================================
@@ -465,6 +547,7 @@ void InputHandler::createBoxAt(int screenX, int screenY, const std::string& pare
 
 InputResult InputHandler::onMouseDown(const InputEvent& e) {
     const int x = e.mouseX, y = e.mouseY;
+    finishGesture();
 
     if (e.button == MouseButton::Right) {
         if (ui_.nodeEditor.active) commitEdit();
@@ -676,28 +759,8 @@ InputResult InputHandler::onMouseUp(const InputEvent& e) {
     const int x = e.mouseX, y = e.mouseY;
 
     switch (gesture_) {
-        case Gesture::DragNodes: {
-            std::set<std::string> parents;
-            for (const auto& [uuid, _] : drag_) {
-                if (auto n = canvas_.getNode(uuid)) {
-                    canvas_.markChanged(uuid);
-                    if (!n->parentId.empty()) parents.insert(n->parentId);
-                }
-            }
-            for (const auto& p : parents) canvas_.resolveOverlaps(p);
-            history_.record(gestureSnapshot_, canvas_);
-            drag_.clear();
-            break;
-        }
-
-        case Gesture::Resize:
-            if (auto n = canvas_.getNode(resize_.uuid)) {
-                canvas_.markChanged(n->uuid);
-                if (!n->parentId.empty()) canvas_.resolveOverlaps(n->parentId);
-            }
-            history_.record(gestureSnapshot_, canvas_);
-            resize_ = ResizeStart{};
-            break;
+        case Gesture::DragNodes:
+        case Gesture::Resize: finishGesture(); break;
 
         case Gesture::Connect: finishConnect(x, y); break;
         case Gesture::AreaSelect: finishAreaSelect(); break;
@@ -835,7 +898,7 @@ void InputHandler::finishConnect(int x, int y) {
     std::string anchorNode;
     const Anchor toAnchor = anchorAt(x, y, anchorNode, true);
     std::string id;
-    edit([&] {
+    edit(Msg::StepConnect, [&] {
         id = canvas_.createConnection(source, target->uuid);
         if (auto conn = canvas_.getConnection(id)) {
             conn->fromAnchor = connectFromAnchor_;
@@ -950,11 +1013,13 @@ void InputHandler::startEditing(const std::string& uuid, bool name) {
 void InputHandler::commitEdit() {
     const NodeEditor ed = ui_.nodeEditor;
     ui_.nodeEditor = NodeEditor{};
+    const bool justCreated = ed.nodeUuid == newBox_ && history_.version() == newBoxVersion_ && history_.canUndo();
+    newBox_.clear();
     if (!ed.active) return;
     auto node = canvas_.getNode(ed.nodeUuid);
     if (!node || (ed.editingName ? node->name : node->text) == ed.text) return;
 
-    edit([&] {
+    auto apply = [&] {
         if (ed.editingName) {
             node->name = ed.text;
             // Make room for the label.
@@ -966,15 +1031,70 @@ void InputHandler::commitEdit() {
         canvas_.markChanged(node->uuid);
         canvas_.expandParentToFit(node->uuid, 2.0);
         if (!node->parentId.empty()) canvas_.resolveOverlaps(node->parentId);
-    });
+    };
+    // The name typed into a brand-new box joins its "new box" step, so one
+    // Ctrl+Z removes the box instead of first turning it back into "New box".
+    if (justCreated) apply();
+    else edit(ed.editingName ? Msg::StepRename : Msg::StepText, apply);
+}
+
+// Ctrl+Z / Ctrl+Y inside an editor. With nothing typed left to undo,
+// Ctrl+Z closes the editor and undoes the last canvas step instead (for a
+// box just created with N, that removes the box).
+bool InputHandler::editorUndoKey(const InputEvent& e, TextUndo& history, std::string& text, int& row, int& col) {
+    if (!e.mods.ctrl || (e.key != 'Z' && e.key != 'Y')) return false;
+    const bool redo = e.key == 'Y' || e.mods.shift;
+    auto& from = redo ? history.redo : history.undo;
+    auto& to = redo ? history.undo : history.redo;
+    if (!from.empty()) {
+        to.push_back({text, row, col});
+        const TextUndo::State s = from.back();
+        from.pop_back();
+        text = s.text;
+        row = s.row;
+        col = s.col;
+        history.last = TextUndo::Kind::None;
+    } else if (!redo) {
+        ui_.nodeEditor = NodeEditor{};
+        ui_.connEditor = ConnectionEditor{};
+        undoRedo(false);
+    }
+    return true;
+}
+
+// Called after a key changed the text: keeps the state from before it, one
+// per word of typing or run of deletions.
+void InputHandler::editorTextChanged(TextUndo& history, TextUndo::State before, TextUndo::Kind kind,
+                                     bool newGroup) {
+    if (kind != history.last || newGroup || history.undo.empty()) history.undo.push_back(std::move(before));
+    history.last = kind;
+    history.redo.clear();
 }
 
 void InputHandler::editorKey(const InputEvent& e) {
     NodeEditor& ed = ui_.nodeEditor;
+    if (editorUndoKey(e, ed.history, ed.text, ed.cursorRow, ed.cursorCol)) return;
+
+    if (ed.placeholder) {
+        ed.placeholder = false;  // any key but typing keeps the default
+        const bool erase = e.key == key::Backspace || e.key == key::Delete;
+        const bool typing = !erase && e.ch >= 0x20 && !e.mods.ctrl;
+        if (erase || typing) {
+            const TextUndo::State original{ed.text, ed.cursorRow, ed.cursorCol};
+            ed.text.clear();
+            ed.cursorRow = ed.cursorCol = 0;
+            editorTextChanged(ed.history, original, TextUndo::Kind::Delete, true);
+            if (erase) return;
+        }
+    }
+
     auto lines = splitLines(ed.text);
     ed.cursorRow = std::clamp(ed.cursorRow, 0, static_cast<int>(lines.size()) - 1);
     std::string* line = &lines[ed.cursorRow];
     ed.cursorCol = std::clamp(ed.cursorCol, 0, utf8::length(*line));
+    const TextUndo::State before{ed.text, ed.cursorRow, ed.cursorCol};
+    TextUndo::Kind kind = TextUndo::Kind::Insert;
+    bool newGroup = false;
 
     switch (e.key) {
         case key::Escape: ui_.nodeEditor = NodeEditor{}; return;  // cancel
@@ -991,8 +1111,10 @@ void InputHandler::editorKey(const InputEvent& e) {
                 ++ed.cursorRow;
                 ed.cursorCol = 0;
             }
+            newGroup = true;
             break;
         case key::Backspace:
+            kind = TextUndo::Kind::Delete;
             if (ed.cursorCol > 0) {
                 utf8::eraseAt(*line, --ed.cursorCol);
             } else if (ed.cursorRow > 0) {
@@ -1003,6 +1125,7 @@ void InputHandler::editorKey(const InputEvent& e) {
             }
             break;
         case key::Delete:
+            kind = TextUndo::Kind::Delete;
             if (ed.cursorCol < utf8::length(*line)) {
                 utf8::eraseAt(*line, ed.cursorCol);
             } else if (ed.cursorRow + 1 < static_cast<int>(lines.size())) {
@@ -1036,11 +1159,14 @@ void InputHandler::editorKey(const InputEvent& e) {
         case key::End: ed.cursorCol = utf8::length(*line); break;
         default:
             if (e.ch < 0x20 || e.mods.ctrl) return;
+            newGroup = e.ch == U' ';  // a word at a time
             utf8::insertAt(*line, ed.cursorCol++, e.ch);
             break;
     }
     ed.text = joinLines(lines);
     ed.cursorCol = std::min(ed.cursorCol, utf8::length(lines[ed.cursorRow]));
+    if (ed.text != before.text) editorTextChanged(ed.history, before, kind, newGroup);
+    else ed.history.last = TextUndo::Kind::None;  // moving the cursor ends a word
 }
 
 // ====================================================================
@@ -1066,7 +1192,7 @@ void InputHandler::commitConnectionEdit() {
     if (!ed.active) return;
     auto conn = canvas_.getConnection(ed.connUuid);
     if (!conn || conn->name == ed.text) return;
-    edit([&] {
+    edit(Msg::StepConnRename, [&] {
         conn->name = ed.text;
         canvas_.markConfigChanged();
     });
@@ -1074,14 +1200,21 @@ void InputHandler::commitConnectionEdit() {
 
 void InputHandler::connectionEditorKey(const InputEvent& e) {
     ConnectionEditor& ed = ui_.connEditor;
+    int row = 0;
+    if (editorUndoKey(e, ed.history, ed.text, row, ed.cursorCol)) return;
     const int len = utf8::length(ed.text);
+    const TextUndo::State before{ed.text, 0, ed.cursorCol};
+    TextUndo::Kind kind = TextUndo::Kind::Insert;
+    bool newGroup = false;
     switch (e.key) {
         case key::Escape: ed = ConnectionEditor{}; return;
         case key::Enter: commitConnectionEdit(); return;
         case key::Backspace:
+            kind = TextUndo::Kind::Delete;
             if (ed.cursorCol > 0) utf8::eraseAt(ed.text, --ed.cursorCol);
             break;
         case key::Delete:
+            kind = TextUndo::Kind::Delete;
             if (ed.cursorCol < len) utf8::eraseAt(ed.text, ed.cursorCol);
             break;
         case key::Left: ed.cursorCol = std::max(0, ed.cursorCol - 1); break;
@@ -1090,9 +1223,12 @@ void InputHandler::connectionEditorKey(const InputEvent& e) {
         case key::End: ed.cursorCol = len; break;
         default:
             if (e.ch < 0x20 || e.mods.ctrl) return;
+            newGroup = e.ch == U' ';
             utf8::insertAt(ed.text, ed.cursorCol++, e.ch);
             break;
     }
+    if (ed.text != before.text) editorTextChanged(ed.history, before, kind, newGroup);
+    else ed.history.last = TextUndo::Kind::None;
 }
 
 }  // namespace ic

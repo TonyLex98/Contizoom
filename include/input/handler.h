@@ -77,6 +77,10 @@ public:
     bool canUndo() const { return history_.canUndo(); }
     bool canRedo() const { return history_.canRedo(); }
     void clearHistory() { history_.clear(); }
+    const History& history() const { return history_; }
+
+    // A message for the status bar ("Undone: move"), once.
+    std::string takeStatus();
 
     Canvas& canvas() { return canvas_; }
 
@@ -102,7 +106,14 @@ private:
     int pressX_ = 0, pressY_ = 0;
     int lastX_ = 0, lastY_ = 0;
     std::string pressNode_;
-    std::string gestureSnapshot_;  // document before a drag/resize/connect, for undo
+    std::string gestureSnapshot_;  // document before a drag/resize, for undo
+    std::string status_;
+
+    // A new box and the name typed into it right away are one undo step:
+    // the name is folded into the "new box" step as long as nothing else
+    // was recorded in between.
+    std::string newBox_;
+    uint64_t newBoxVersion_ = 0;
 
     // Drags and resizes work in world coordinates: the parent may grow
     // left/up under the box while it's being dragged (which shifts the box's
@@ -153,8 +164,14 @@ private:
     void updateHover(int x, int y);
 
     // Runs an edit and records it as one undo step if it changed anything.
-    void edit(const std::function<void()>& change);
+    void edit(Msg label, const std::function<void()>& change);
+    void undoRedo(bool redo);
     void afterContentReplaced();
+    // A drag or resize whose mouse-up never came (released outside the
+    // window, or a key pressed mid-drag) is completed and recorded.
+    void finishGesture();
+    void cancelGesture();  // Escape mid-drag: put everything back
+    void boxCreated(const std::string& uuid);
 
     // Actions.
     void select(const std::string& uuid, bool additive);
@@ -176,6 +193,8 @@ private:
     void startEditing(const std::string& uuid, bool name);
     void editorKey(const InputEvent& e);
     void commitEdit();
+    bool editorUndoKey(const InputEvent& e, TextUndo& history, std::string& text, int& row, int& col);
+    void editorTextChanged(TextUndo& history, TextUndo::State before, TextUndo::Kind kind, bool newGroup);
 
     // Connection label editor.
     void startConnectionEdit(const std::string& connUuid, int x, int y);

@@ -443,3 +443,24 @@ IC_MSG(DemoProjectsText,
        "Clic droit sur une boîte, une ligne ou le vide pour son menu (ouvrir, copier, exporter…).",
        "Cada cambio se guarda solo; Ctrl+Z / Ctrl+Y deshacen y rehacen.\n"
        "Clic derecho en una caja, una línea o el vacío para su menú (abrir, copiar, exportar…).")
+
+// ---- Undo / redo: what a step did, shown as "Undone: Move" ---------
+IC_MSG(StepEdit, "edit", "изменение", "编辑", "modification", "edición")
+IC_MSG(StepMove, "move", "перемещение", "移动", "déplacement", "movimiento")
+IC_MSG(StepResize, "resize", "изменение размера", "调整大小", "redimensionnement", "cambio de tamaño")
+IC_MSG(StepNewBox, "new box", "новый блок", "新框", "nouvelle boîte", "nueva caja")
+IC_MSG(StepDelete, "delete", "удаление", "删除", "suppression", "eliminación")
+IC_MSG(StepFrame, "frame", "рамка", "框架", "cadre", "marco")
+IC_MSG(StepPromote, "move out of parent", "вынос из родителя", "移出父框", "sortie du parent", "sacar del padre")
+IC_MSG(StepDemote, "move into box", "вложение в блок", "移入框内", "entrée dans la boîte", "meter en la caja")
+IC_MSG(StepRename, "rename", "переименование", "重命名", "renommage", "cambio de nombre")
+IC_MSG(StepText, "text edit", "правка текста", "编辑文本", "modification du texte", "edición del texto")
+IC_MSG(StepConnect, "new connection", "новая связь", "新连线", "nouvelle liaison", "nueva conexión")
+IC_MSG(StepConnRename, "connection label", "подпись связи", "连线标签", "libellé de liaison", "etiqueta de conexión")
+IC_MSG(StepConnReverse, "connection reversed", "разворот связи", "反转连线", "liaison inversée", "conexión invertida")
+IC_MSG(StepConnStyle, "connection style", "стиль связи", "连线样式", "style de liaison", "estilo de conexión")
+IC_MSG(StepConnDelete, "connection deleted", "удаление связи", "删除连线", "liaison supprimée", "conexión eliminada")
+IC_MSG(StatusUndone, "Undone: {0}", "Отменено: {0}", "已撤销：{0}", "Annulé : {0}", "Deshecho: {0}")
+IC_MSG(StatusRedone, "Redone: {0}", "Повторено: {0}", "已重做：{0}", "Rétabli : {0}", "Rehecho: {0}")
+IC_MSG(StatusNothingToUndo, "Nothing to undo", "Нечего отменять", "没有可撤销的操作", "Rien à annuler", "Nada que deshacer")
+IC_MSG(StatusNothingToRedo, "Nothing to redo", "Нечего повторять", "没有可重做的操作", "Rien à rétablir", "Nada que rehacer")
