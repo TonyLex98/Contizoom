@@ -54,12 +54,17 @@ void Canvas::rebuildHierarchy() {
     }
 
     for (auto& [uuid, node] : nodes_) {
-        if (node->parentId.empty()) continue;
+        if (node->parentId.empty()) {
+            node->zoomLevel = 0;
+            continue;
+        }
         auto parentIt = nodes_.find(node->parentId);
         if (parentIt == nodes_.end()) {
             node->parentId.clear();
+            node->zoomLevel = 0;
             continue;
         }
+        node->zoomLevel = parentIt->second->zoomLevel + 1;
         auto& children = parentIt->second->childrenUuids;
         if (std::find(children.begin(), children.end(), uuid) == children.end()) {
             children.push_back(uuid);
@@ -74,6 +79,8 @@ void Canvas::rebuildHierarchy() {
 std::string Canvas::createNode(const std::string& text, const Rect& rect,
                                 const std::string& name,
                                 const std::string& parentId, int level) {
+    if (parentId.empty()) level = 0;
+
     std::string uuid = Uuid::generate();
     auto now = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::seconds>(

@@ -36,11 +36,41 @@ struct Viewport {
 
 struct EditOverlay {
     bool active = false;
+    bool editingName = false;
     std::string nodeUuid;
     std::string text;
     Rect nodeRect;
     int cursorCol = 0;
     int cursorRow = 0;
+};
+
+// Which resize-handle corner the mouse is currently over, if any. Mirrors
+// InputHandler::ResizeCorner's ordinal (0=none, 1=TopLeft, 2=TopRight,
+// 3=BottomLeft, 4=BottomRight) without the view layer depending on the
+// input layer's header.
+struct CornerHover {
+    std::string nodeUuid;
+    int corner = 0;
+};
+
+// Which connection anchor point the mouse is currently over, if any. Mirrors
+// InputHandler::AnchorEdge's ordinal (0=Left, 1=Right, 2=Bottom); index is
+// which of the 3 points along that edge (0=nearest start, 1=middle, 2=nearest end).
+struct AnchorHover {
+    std::string nodeUuid;
+    int edge = -1;
+    int index = -1;
+};
+
+// Inline rename box for a connection's name, shown near its label position
+// on the screen (connections have no rect of their own to anchor to).
+struct ConnectionEditOverlay {
+    bool active = false;
+    std::string connUuid;
+    std::string text;
+    int cursorCol = 0;
+    int screenX = 0;
+    int screenY = 0;
 };
 
 class Canvas {
@@ -98,6 +128,10 @@ public:
     Viewport viewport_;
     Selection selection_;
     EditOverlay editOverlay_;
+    CornerHover cornerHover_;
+    AnchorHover anchorHover_;
+    std::string selectedConnection_;
+    ConnectionEditOverlay connEditOverlay_;
 
     std::string canvasName;
     uint64_t createdAt = 0;

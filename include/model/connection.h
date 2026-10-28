@@ -49,6 +49,16 @@ public:
     double toOffsetX = 0.0;
     double toOffsetY = 0.0;
 
+    // Which anchor point on each node's border the line is drawn from/to
+    // (0=Left,1=Right,2=Bottom edge; 0/1/2 = quarter/half/three-quarter
+    // along it), or -1 to fall back to the node's center. A fraction of
+    // the box rather than a pixel offset, so it stays on the same edge
+    // point regardless of zoom.
+    int fromAnchorEdge = -1;
+    int fromAnchorIndex = -1;
+    int toAnchorEdge = -1;
+    int toAnchorIndex = -1;
+
     Connection() = default;
 
     Connection(const std::string& uuid_, const std::string& from,

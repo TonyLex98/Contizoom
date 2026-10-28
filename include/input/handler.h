@@ -64,6 +64,12 @@ class InputHandler {
 public:
     explicit InputHandler(Canvas& canvas);
 
+    // Corner-drag resize
+    enum class ResizeCorner { None, TopLeft, TopRight, BottomLeft, BottomRight };
+
+    // Connection anchor points (ordinal mirrors AnchorHover in canvas.h)
+    enum class AnchorEdge { Left = 0, Right = 1, Bottom = 2 };
+
     InputResult process(const InputEvent& event);
 
     void setViewSize(int w, int h) { viewWidth_ = w; viewHeight_ = h; sidebarWidth_ = 26; canvasArea_ = CanvasArea::withSidebar(w, h); }
@@ -93,6 +99,7 @@ private:
     struct { bool left = false; bool right = false; } mouseDown_;
     double lastLogicalX_ = 0, lastLogicalY_ = 0;
     int lastScreenX_ = 0, lastScreenY_ = 0;
+    double panScreenScale_ = 1.0;
     bool zHeld_ = false;
     bool draggingNodes_ = false;
     double dragOffsetX_ = 0, dragOffsetY_ = 0;
@@ -104,9 +111,31 @@ private:
         double parentSrX = 0, parentSrY = 0;  // parent screen rect origin
         double parentSrW = 1, parentSrH = 1;  // parent screen rect size
         double parentRectW = 1, parentRectH = 1;  // parent logical size
+        double screenScaleX = 1, screenScaleY = 1;  // screen cells per logical unit
         bool isChild = false;  // false = root node (world coords)
     };
     std::map<std::string, DragState> dragStates_;
+
+    // Corner-drag resize (ResizeCorner is declared public above)
+    struct ResizeState {
+        bool active = false;
+        std::string nodeUuid;
+        ResizeCorner corner = ResizeCorner::None;
+        bool isChild = false;
+        double startRectX = 0, startRectY = 0, startRectW = 0, startRectH = 0;
+        double startScreenX = 0, startScreenY = 0;
+        double parentSrW = 1, parentSrH = 1;   // parent screen rect size
+        double parentRectW = 1, parentRectH = 1;  // parent logical size
+        double screenScaleX = 1, screenScaleY = 1;  // screen cells per logical unit (root nodes)
+
+        // Whole subtree snapshot (by uuid) at drag start, so it can be
+        // rescaled in lockstep with the node as it shrinks/grows.
+        std::map<std::string, Rect> startDescendantRects;
+        // Floor derived from direct children's own minimum size (0 = no
+        // children, falls back to the plain node minimum).
+        double minContentW = 0, minContentH = 0;
+    };
+    ResizeState resizing_;
 
     // Pending click: distinguish single-click (edit) from drag (move)
     struct PendingClick {
@@ -129,6 +158,16 @@ private:
     uint64_t lastClickTime_ = 0;
     std::optional<std::string> lastClickedNode_;
     std::optional<std::string> connectionFrom_;
+    int connectionFromAnchorEdge_ = -1;
+    int connectionFromAnchorIndex_ = -1;
+
+    // Connection name inline editing
+    std::optional<std::string> editingConnection_;
+    std::string editConnText_;
+    int editConnCursorCol_ = 0;
+    int lastConnClickX_ = -1, lastConnClickY_ = -1;
+    uint64_t lastConnClickTime_ = 0;
+    std::optional<std::string> lastClickedConnection_;
 
     // Input dispatching
     InputResult handleKeyPress(const InputEvent&);
@@ -144,6 +183,7 @@ private:
     double screenToLogicalY(double sy) const;
     double logicalToScreenX(double lx) const;
     double logicalToScreenY(double ly) const;
+    double panScaleAtScreen(int screenX, int screenY) const;
 
     // Actions
     void selectNode(const std::string& uuid, bool add = false);
@@ -155,11 +195,24 @@ private:
     void createNodeAtCursor();
     void renameSelected();
     void autoCenterViewportOnRoot();
-    void startConnection(const std::string& fromUuid);
+    void startConnection(const std::string& fromUuid, int anchorEdge = -1, int anchorIndex = -1);
     void cancelConnection();
 
     // Hit testing using screen rects (for fractal layout)
     std::shared_ptr<Node> findNodeAtScreen(int screenX, int screenY) const;
+
+    // Corner-drag resize
+    ResizeCorner findResizeCornerAtScreen(int screenX, int screenY, std::string& outUuid) const;
+    void beginResize(const std::string& uuid, ResizeCorner corner, int screenX, int screenY);
+    void updateResize(int screenX, int screenY);
+    void endResize();
+
+    // Connection anchors (any node, not just selected - unlike resize corners)
+    bool findAnchorAtScreen(int screenX, int screenY, std::string& outUuid,
+                             AnchorEdge& outEdge, int& outIndex) const;
+    std::string findConnectionAtScreen(int screenX, int screenY) const;
+    void selectConnection(const std::string& uuid);
+    void deleteSelectedConnection();
 
     // Inline editing
     void startEditing(const std::string& nodeUuid);
@@ -167,6 +220,12 @@ private:
     void handleEditKey(const InputEvent& event);
     void commitEdit();
     void cancelEdit();
+
+    // Connection name inline editing
+    void startEditingConnection(const std::string& connUuid, int screenX, int screenY);
+    void handleConnectionEditKey(const InputEvent& event);
+    void commitConnectionEdit();
+    void cancelConnectionEdit();
 
     // UTF-8 helpers (editCursorCol_ is character index, not byte index)
     static int utf8CharLen(const std::string& s, int bytePos); // bytes in char at bytePos

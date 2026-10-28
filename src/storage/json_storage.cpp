@@ -137,7 +137,11 @@ bool JsonStorage::saveCanvas(const Canvas& canvas, const std::string& path) {
             cfg << "      \"name\": \"" << jsonEscape(conn->name) << "\",\n";
             cfg << "      \"fromUuid\": \"" << conn->fromUuid << "\",\n";
             cfg << "      \"toUuid\": \"" << conn->toUuid << "\",\n";
-            cfg << "      \"type\": " << static_cast<int>(conn->type) << "\n";
+            cfg << "      \"type\": " << static_cast<int>(conn->type) << ",\n";
+            cfg << "      \"fromAnchorEdge\": " << conn->fromAnchorEdge << ",\n";
+            cfg << "      \"fromAnchorIndex\": " << conn->fromAnchorIndex << ",\n";
+            cfg << "      \"toAnchorEdge\": " << conn->toAnchorEdge << ",\n";
+            cfg << "      \"toAnchorIndex\": " << conn->toAnchorIndex << "\n";
             cfg << "    }";
         }
         cfg << "\n  ]\n";
@@ -317,6 +321,14 @@ bool JsonStorage::loadCanvas(Canvas& canvas, const std::string& path) {
                             if (cUuid.empty()) cUuid = cFrom + "-" + cTo;
                             auto conn = std::make_shared<Connection>(cUuid, cFrom, cTo, type);
                             conn->name = cName;
+                            auto readAnchor = [&](const char* key) {
+                                std::string v = extractNum(connStr, key);
+                                return v.empty() ? -1 : std::stoi(v);
+                            };
+                            conn->fromAnchorEdge = readAnchor("fromAnchorEdge");
+                            conn->fromAnchorIndex = readAnchor("fromAnchorIndex");
+                            conn->toAnchorEdge = readAnchor("toAnchorEdge");
+                            conn->toAnchorIndex = readAnchor("toAnchorIndex");
                             canvas.insertConnection(cUuid, conn);
                         }
                         pos = endBrace + 1;

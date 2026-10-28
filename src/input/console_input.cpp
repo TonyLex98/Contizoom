@@ -25,6 +25,8 @@ bool ConsoleInput::setup() {
     GetConsoleScreenBufferInfo(hOut_, &sbi);
     width_  = static_cast<int>(sbi.srWindow.Right - sbi.srWindow.Left + 1);
     height_ = static_cast<int>(sbi.srWindow.Bottom - sbi.srWindow.Top + 1);
+    windowLeft_ = static_cast<int>(sbi.srWindow.Left);
+    windowTop_ = static_cast<int>(sbi.srWindow.Top);
 
     DWORD mode;
     GetConsoleMode(hIn_, &mode);
@@ -36,14 +38,27 @@ bool ConsoleInput::setup() {
     CONSOLE_CURSOR_INFO ci = { 1, FALSE };
     SetConsoleCursorInfo(hOut_, &ci);
 
-    // Match buffer size to window — no scroll needed, viewport handles scrolling
+    // Match buffer size to window вЂ” no scroll needed, viewport handles scrolling
     SetConsoleScreenBufferSize(hOut_, { static_cast<SHORT>(width_), static_cast<SHORT>(height_) });
+    if (GetConsoleScreenBufferInfo(hOut_, &sbi)) {
+        width_  = static_cast<int>(sbi.srWindow.Right - sbi.srWindow.Left + 1);
+        height_ = static_cast<int>(sbi.srWindow.Bottom - sbi.srWindow.Top + 1);
+        windowLeft_ = static_cast<int>(sbi.srWindow.Left);
+        windowTop_ = static_cast<int>(sbi.srWindow.Top);
+    }
 
     return true;
 }
 
 void ConsoleInput::updateBufferSize() {
     SetConsoleScreenBufferSize(hOut_, { static_cast<SHORT>(width_), static_cast<SHORT>(height_) });
+    CONSOLE_SCREEN_BUFFER_INFO sbi;
+    if (GetConsoleScreenBufferInfo(hOut_, &sbi)) {
+        width_  = static_cast<int>(sbi.srWindow.Right - sbi.srWindow.Left + 1);
+        height_ = static_cast<int>(sbi.srWindow.Bottom - sbi.srWindow.Top + 1);
+        windowLeft_ = static_cast<int>(sbi.srWindow.Left);
+        windowTop_ = static_cast<int>(sbi.srWindow.Top);
+    }
 }
 
 void ConsoleInput::restore() {
@@ -90,10 +105,14 @@ std::optional<InputEvent> ConsoleInput::pollResize() {
 
     int newW = static_cast<int>(sbi.srWindow.Right - sbi.srWindow.Left + 1);
     int newH = static_cast<int>(sbi.srWindow.Bottom - sbi.srWindow.Top + 1);
+    int newLeft = static_cast<int>(sbi.srWindow.Left);
+    int newTop = static_cast<int>(sbi.srWindow.Top);
 
-    if (newW != width_ || newH != height_) {
+    if (newW != width_ || newH != height_ || newLeft != windowLeft_ || newTop != windowTop_) {
         width_ = newW;
         height_ = newH;
+        windowLeft_ = newLeft;
+        windowTop_ = newTop;
         RawEvent e{};
         e.type = 5;
         e.newWidth = newW;
@@ -133,8 +152,8 @@ void ConsoleInput::readPendingInput() {
         else if (rec.EventType == MOUSE_EVENT) {
             DWORD ck = rec.Event.MouseEvent.dwControlKeyState;
             RawEvent e{};
-            e.mouseX = static_cast<int>(rec.Event.MouseEvent.dwMousePosition.X);
-            e.mouseY = static_cast<int>(rec.Event.MouseEvent.dwMousePosition.Y);
+            e.mouseX = static_cast<int>(rec.Event.MouseEvent.dwMousePosition.X) - windowLeft_;
+            e.mouseY = static_cast<int>(rec.Event.MouseEvent.dwMousePosition.Y) - windowTop_;
             e.ctrl = (ck & 0x04) != 0;
             e.shift = (ck & 0x01) != 0;
             e.alt = ((ck & 0x02) | (ck & 0x08)) != 0;
@@ -183,6 +202,11 @@ void ConsoleInput::readPendingInput() {
             }
         }
         else if (rec.EventType == WINDOW_BUFFER_SIZE_EVENT) {
+            CONSOLE_SCREEN_BUFFER_INFO sbi;
+            if (GetConsoleScreenBufferInfo(hOut_, &sbi)) {
+                windowLeft_ = static_cast<int>(sbi.srWindow.Left);
+                windowTop_ = static_cast<int>(sbi.srWindow.Top);
+            }
             RawEvent e{};
             e.type = 5;
             e.newWidth = static_cast<int>(rec.Event.WindowBufferSizeEvent.dwSize.X);

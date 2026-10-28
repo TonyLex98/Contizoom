@@ -48,6 +48,8 @@ public:
 private:
     int width_ = 120;
     int height_ = 40;
+    int windowLeft_ = 0;
+    int windowTop_ = 0;
     bool leftHeld_ = false;
     bool rightHeld_ = false;
 

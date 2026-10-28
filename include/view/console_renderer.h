@@ -88,12 +88,18 @@ private:
 
     ScreenRect computeScreenRect(const Node* node, const Canvas& canvas,
                                    const Viewport& vp, int vw, int vh);
-    void drawNodeAt(const Node& node, const ScreenRect& sr, int vw, int vh, bool isCluster = false);
+    // hoveredCorner mirrors InputHandler::ResizeCorner's ordinal
+    // (0=none, 1=TopLeft, 2=TopRight, 3=BottomLeft, 4=BottomRight).
+    // hoveredAnchorEdge/Index mirror AnchorHover (-1 = none).
+    void drawNodeAt(const Node& node, const ScreenRect& sr, int vw, int vh,
+                     bool isCluster = false, int hoveredCorner = 0,
+                     int hoveredAnchorEdge = -1, int hoveredAnchorIndex = -1);
     void drawConnectionAt(const Connection* conn, const ScreenRect& from, const ScreenRect& to,
-                           int vw, int vh);
+                           int vw, int vh, bool selected = false);
     void drawSelection(const Selection& sel, int vw, int vh, const Viewport& vp);
     void drawHUD(const Viewport& vp, int vw, int vh);
     void drawEditOverlay(const EditOverlay& overlay, int vw, int vh, const Viewport& vp);
+    void drawConnectionEditOverlay(const ConnectionEditOverlay& overlay, int vw, int vh);
     void drawSidebar(const Canvas& canvas);
     void drawSidebarNodeTree(const Canvas& canvas, const std::string& parentUuid, int indent, int& row);
 };

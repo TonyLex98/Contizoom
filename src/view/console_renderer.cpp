@@ -45,6 +45,27 @@ static int floorEdge(double origin, double extent) {
     return static_cast<int>(std::floor(origin + extent));
 }
 
+// Connection anchor points: 3 evenly spaced points each along the Left,
+// Right and Bottom edges (Top is skipped - that row is reserved for the
+// name label, an anchor there would sit under the text). Ordinal mirrors
+// AnchorHover: 0=Left, 1=Right, 2=Bottom; index 0/1/2 = quarter/half/
+// three-quarter along that edge.
+static bool anchorPoint(int ox, int oy, int w, int h, int edge, int index, int& px, int& py) {
+    double frac = (index + 1) / 4.0; // 0.25, 0.5, 0.75
+    switch (edge) {
+        case 0: px = ox;         py = oy + static_cast<int>(std::round(frac * (h - 1))); return true;
+        case 1: px = ox + w - 1; py = oy + static_cast<int>(std::round(frac * (h - 1))); return true;
+        case 2: px = ox + static_cast<int>(std::round(frac * (w - 1))); py = oy + h - 1;  return true;
+        default: return false;
+    }
+}
+
+// Below this, quarter/three-quarter points would round onto the corners or
+// each other - not worth showing.
+static bool canShowAnchors(int w, int h) {
+    return w >= 8 && h >= 6;
+}
+
 ConsoleRenderer::ConsoleRenderer() {
     hOut_ = GetStdHandle(STD_OUTPUT_HANDLE);
 }
@@ -290,7 +311,8 @@ void ConsoleRenderer::render(const Canvas& canvas) {
         auto fromIt = screenRects_.find(conn->fromUuid);
         auto toIt = screenRects_.find(conn->toUuid);
         if (fromIt != screenRects_.end() && toIt != screenRects_.end()) {
-            drawConnectionAt(conn.get(), fromIt->second, toIt->second, vw, vh);
+            drawConnectionAt(conn.get(), fromIt->second, toIt->second, vw, vh,
+                              canvas.selectedConnection_ == conn->uuid);
         }
     }
 
@@ -298,7 +320,14 @@ void ConsoleRenderer::render(const Canvas& canvas) {
     for (const auto* node : sorted) {
         if (drawnNodes.count(node->uuid)) {
             auto it = screenRects_.find(node->uuid);
-            drawNodeAt(*node, it->second, vw, vh, clusterNodes.count(node->uuid) > 0);
+            int hoveredCorner = (canvas.cornerHover_.nodeUuid == node->uuid) ? canvas.cornerHover_.corner : 0;
+            int hoveredAnchorEdge = -1, hoveredAnchorIndex = -1;
+            if (canvas.anchorHover_.nodeUuid == node->uuid) {
+                hoveredAnchorEdge = canvas.anchorHover_.edge;
+                hoveredAnchorIndex = canvas.anchorHover_.index;
+            }
+            drawNodeAt(*node, it->second, vw, vh, clusterNodes.count(node->uuid) > 0, hoveredCorner,
+                       hoveredAnchorEdge, hoveredAnchorIndex);
         }
     }
 
@@ -307,6 +336,7 @@ void ConsoleRenderer::render(const Canvas& canvas) {
 
     // Edit overlay
     if (canvas.editOverlay_.active) drawEditOverlay(canvas.editOverlay_, vw, vh, vp);
+    if (canvas.connEditOverlay_.active) drawConnectionEditOverlay(canvas.connEditOverlay_, vw, vh);
 
     // HUD
     drawHUD(vp, vw, vh);
@@ -372,12 +402,18 @@ void ConsoleRenderer::render(const Canvas& canvas) {
 
         // Redraw corners to guarantee they are never overwritten by names
         if (w >= 2 && h >= 2) {
-            char hCorner = (node->state == NodeState::Selected) ? '#' :
-                           (node->state == NodeState::Hovered) ? '#' : '+';
-            uint16_t hAttr = (node->state == NodeState::Selected) ? 0x0F :
-                             (node->state == NodeState::Hovered) ? 0x0A : 0x09;
-            putChar(ox, oy, hCorner); putAttr(ox, oy, hAttr);
-            putChar(ox + w - 1, oy, hCorner); putAttr(ox + w - 1, oy, hAttr);
+            if (node->state == NodeState::Selected) {
+                int hoveredCorner = (canvas.cornerHover_.nodeUuid == node->uuid) ? canvas.cornerHover_.corner : 0;
+                uint16_t tlAttr = hoveredCorner == 1 ? 0xF0 : 0x0F;
+                uint16_t trAttr = hoveredCorner == 2 ? 0xF0 : 0x0F;
+                putChar(ox, oy, '\\');           putAttr(ox, oy, tlAttr);
+                putChar(ox + w - 1, oy, '/');     putAttr(ox + w - 1, oy, trAttr);
+            } else {
+                char hCorner = (node->state == NodeState::Hovered) ? '#' : '+';
+                uint16_t hAttr = (node->state == NodeState::Hovered) ? 0x0A : 0x09;
+                putChar(ox, oy, hCorner); putAttr(ox, oy, hAttr);
+                putChar(ox + w - 1, oy, hCorner); putAttr(ox + w - 1, oy, hAttr);
+            }
         }
     }
 
@@ -419,7 +455,9 @@ void ConsoleRenderer::putAttr(int x, int y, uint16_t attr) {
         buffer_[y * viewWidth_ + x].attr = attr;
 }
 
-void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw, int vh, bool isCluster) {
+void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw, int vh,
+                                   bool isCluster, int hoveredCorner,
+                                   int hoveredAnchorEdge, int hoveredAnchorIndex) {
     if (!sr.valid()) return;
 
     int ox = static_cast<int>(std::floor(sr.x));
@@ -540,6 +578,38 @@ void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw,
         }
     }
 
+    // Resize handles: a selected box's corners get their own diagonal marks
+    // instead of the ordinary border corner, so they read as grabbable
+    // rather than just "where the border turns." Whichever one the mouse is
+    // actually over is drawn in reverse video so it's obvious which corner
+    // will move if you click now.
+    if (node.state == NodeState::Selected) {
+        int rightX = ox + w - 1;
+        int bottomY = oy + h - 1;
+        uint16_t plainAttr = 0x0F;
+        uint16_t hoverAttr = 0xF0;
+        putChar(ox, oy, '\\');          putAttr(ox, oy, hoveredCorner == 1 ? hoverAttr : plainAttr);
+        putChar(rightX, oy, '/');       putAttr(rightX, oy, hoveredCorner == 2 ? hoverAttr : plainAttr);
+        putChar(ox, bottomY, '/');      putAttr(ox, bottomY, hoveredCorner == 3 ? hoverAttr : plainAttr);
+        putChar(rightX, bottomY, '\\'); putAttr(rightX, bottomY, hoveredCorner == 4 ? hoverAttr : plainAttr);
+    }
+
+    // Connection anchor points: always shown (not just for selected nodes) -
+    // dragging from one to another node creates a connection. Whichever one
+    // is currently under the mouse lights up in reverse video, same as a
+    // resize corner, so it's clear it's a live drop target.
+    if (canShowAnchors(w, h)) {
+        for (int edge = 0; edge < 3; edge++) {
+            for (int index = 0; index < 3; index++) {
+                int px, py;
+                if (!anchorPoint(ox, oy, w, h, edge, index, px, py)) continue;
+                bool hovered = (edge == hoveredAnchorEdge && index == hoveredAnchorIndex);
+                putChar(px, py, 'o');
+                putAttr(px, py, hovered ? 0xF0 : 0x0B);
+            }
+        }
+    }
+
     // Body text — only if node is large enough (zoom check: text disappears first when zooming out)
     bool showText = (w >= 5 && h >= (hasHeader ? 4 : 3)) && !node.text.empty();
     if (showText) {
@@ -575,46 +645,145 @@ void ConsoleRenderer::drawNodeAt(const Node& node, const ScreenRect& sr, int vw,
 
 }
 
+namespace {
+struct ExitDir { int dx, dy; };
+}
+
+// Which way a line leaves a given anchor edge (0=Left,1=Right,2=Bottom), or
+// for a center-fallback endpoint (edge<0) a direction picked from where the
+// other end sits - there's no Top anchor (that row is the name label), so
+// the vertical case always exits downward.
+static ExitDir exitDirFor(int edge, double fromX, double fromY, double towardX, double towardY) {
+    if (edge == 0) return {-1, 0};
+    if (edge == 1) return {1, 0};
+    if (edge == 2) return {0, 1};
+    double ddx = towardX - fromX, ddy = towardY - fromY;
+    if (std::abs(ddx) > std::abs(ddy)) return {ddx >= 0 ? 1 : -1, 0};
+    return {0, 1};
+}
+
+// Orthogonal (Manhattan) path between two points that leave in fixed
+// directions: a short stub out of each anchor, then one or two bends to
+// join them. This is a routing heuristic, not full obstacle avoidance - it
+// won't detour around a node that happens to sit between the two stubs.
+static std::vector<std::pair<int, int>> routeOrthogonal(int x1, int y1, ExitDir d1,
+                                                          int x2, int y2, ExitDir d2) {
+    const int stub = 2;
+    std::vector<std::pair<int, int>> pts;
+    pts.push_back({x1, y1});
+    int ax = x1 + d1.dx * stub, ay = y1 + d1.dy * stub;
+    pts.push_back({ax, ay});
+    int bx = x2 + d2.dx * stub, by = y2 + d2.dy * stub;
+
+    bool aHoriz = d1.dx != 0;
+    bool bHoriz = d2.dx != 0;
+    if (aHoriz && bHoriz) {
+        int midX = (ax + bx) / 2;
+        pts.push_back({midX, ay});
+        pts.push_back({midX, by});
+    } else if (aHoriz && !bHoriz) {
+        pts.push_back({bx, ay});
+    } else if (!aHoriz && bHoriz) {
+        pts.push_back({ax, by});
+    } else {
+        int midY = (ay + by) / 2;
+        pts.push_back({ax, midY});
+        pts.push_back({bx, midY});
+    }
+    pts.push_back({bx, by});
+    pts.push_back({x2, y2});
+    return pts;
+}
+
 void ConsoleRenderer::drawConnectionAt(const Connection* conn, const ScreenRect& from,
-                                        const ScreenRect& to, int, int) {
+                                        const ScreenRect& to, int vw, int vh, bool selected) {
     if (!from.valid() || !to.valid()) return;
 
-    int x1 = static_cast<int>(from.centerX());
-    int y1 = static_cast<int>(from.centerY());
-    int x2 = static_cast<int>(to.centerX());
-    int y2 = static_cast<int>(to.centerY());
+    // If the connection was dragged from/to a specific anchor point, draw
+    // it starting/ending exactly there instead of the node's center - a
+    // fraction of the box, so it still lands on the right edge point after
+    // the node moves, resizes, or the view zooms.
+    auto endpointOf = [](const ScreenRect& sr, int edge, int index, int fallbackX, int fallbackY) {
+        if (edge < 0 || index < 0) return std::pair<int, int>{fallbackX, fallbackY};
+        int ox = static_cast<int>(std::floor(sr.x));
+        int oy = static_cast<int>(std::floor(sr.y));
+        int w = floorEdge(sr.x, sr.w) - ox;
+        int h = floorEdge(sr.y, sr.h) - oy;
+        if (!canShowAnchors(w, h)) return std::pair<int, int>{fallbackX, fallbackY};
+        int px, py;
+        if (anchorPoint(ox, oy, w, h, edge, index, px, py)) return std::pair<int, int>{px, py};
+        return std::pair<int, int>{fallbackX, fallbackY};
+    };
 
-    char ch = '-';
+    auto [x1, y1] = endpointOf(from, conn->fromAnchorEdge, conn->fromAnchorIndex,
+                                static_cast<int>(from.centerX()), static_cast<int>(from.centerY()));
+    auto [x2, y2] = endpointOf(to, conn->toAnchorEdge, conn->toAnchorIndex,
+                                static_cast<int>(to.centerX()), static_cast<int>(to.centerY()));
+
+    char hCh = '-', vCh = '|';
     uint16_t connAttr = 0x08;
     if (conn->type == ConnType::DottedLine || conn->type == ConnType::DottedArrow) {
-        ch = '.'; connAttr = 0x05;
+        hCh = '.'; vCh = ':'; connAttr = 0x05;
     }
     if (conn->type == ConnType::DashedLine || conn->type == ConnType::DashedArrow) {
-        ch = '-'; connAttr = 0x06;
+        hCh = '-'; vCh = '|'; connAttr = 0x06;
     }
-    if (conn->type == ConnType::Arrow || conn->type == ConnType::DottedArrow ||
-        conn->type == ConnType::DashedArrow) {
-        connAttr = 0x09;
+    bool isArrow = conn->type == ConnType::Arrow || conn->type == ConnType::DottedArrow ||
+                   conn->type == ConnType::DashedArrow;
+    if (isArrow) connAttr = 0x09;
+    if (selected) connAttr = 0x0F;
+
+    ExitDir d1 = exitDirFor(conn->fromAnchorEdge, x1, y1, x2, y2);
+    ExitDir d2 = exitDirFor(conn->toAnchorEdge, x2, y2, x1, y1);
+    auto pts = routeOrthogonal(x1, y1, d1, x2, y2, d2);
+
+    for (size_t i = 0; i + 1 < pts.size(); i++) {
+        auto [sx, sy] = pts[i];
+        auto [ex, ey] = pts[i + 1];
+        if (sx == ex) {
+            int y0 = std::min(sy, ey), y1b = std::max(sy, ey);
+            for (int y = y0; y <= y1b; y++) { putChar(sx, y, vCh); putAttr(sx, y, connAttr); }
+        } else if (sy == ey) {
+            int x0 = std::min(sx, ex), x1b = std::max(sx, ex);
+            for (int x = x0; x <= x1b; x++) { putChar(x, sy, hCh); putAttr(x, sy, connAttr); }
+        }
+    }
+    // Mark the bends so the route reads as deliberate right angles rather
+    // than a gap in the line.
+    for (size_t i = 1; i + 1 < pts.size(); i++) {
+        putChar(pts[i].first, pts[i].second, '+');
+        putAttr(pts[i].first, pts[i].second, connAttr);
     }
 
-    int dx = std::abs(x2 - x1), dy = std::abs(y2 - y1);
-    int sx = (x1 < x2) ? 1 : -1, sy = (y1 < y2) ? 1 : -1;
-    int err = dx - dy;
-
-    while (true) {
-        char drawCh = (dx > dy) ? ch : (ch == '.' ? ':' : '|');
-        putChar(x1, y1, drawCh);
-        putAttr(x1, y1, connAttr);
-        if (x1 == x2 && y1 == y2) break;
-        int e2 = 2 * err;
-        if (e2 > -dy) { err -= dy; x1 += sx; }
-        if (e2 < dx) { err += dx; y1 += sy; }
-    }
-
-    if (conn->type == ConnType::Arrow || conn->type == ConnType::DottedArrow ||
-        conn->type == ConnType::DashedArrow) {
-        putChar(x2, y2, '>');
+    if (isArrow) {
+        // Points into the target in the direction the final stub actually
+        // approaches from, not a fixed '>' - the route can arrive from
+        // any side depending on which anchors were used.
+        char arrowCh = d2.dx > 0 ? '<' : d2.dx < 0 ? '>' : '^';
+        putChar(x2, y2, arrowCh);
         putAttr(x2, y2, connAttr);
+    }
+
+    if (!conn->name.empty()) {
+        auto [lx, ly] = pts[pts.size() / 2];
+        int px = lx + 1;
+        size_t i = 0;
+        while (i < conn->name.size() && px < vw && ly >= 0 && ly < vh) {
+            unsigned char b = static_cast<unsigned char>(conn->name[i]);
+            wchar_t ch;
+            if (b < 0x80) { ch = b; i += 1; }
+            else if (b < 0xE0 && i + 1 < conn->name.size()) {
+                ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(conn->name[i + 1]) & 0x3F);
+                i += 2;
+            } else if (i + 2 < conn->name.size()) {
+                ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(conn->name[i + 1]) & 0x3F) << 6) |
+                     (static_cast<unsigned char>(conn->name[i + 2]) & 0x3F);
+                i += 3;
+            } else { ch = b; i += 1; }
+            putChar(px, ly, ch);
+            putAttr(px, ly, selected ? 0x0F : 0x0E);
+            px++;
+        }
     }
 }
 
@@ -845,6 +1014,52 @@ void ConsoleRenderer::drawEditOverlay(const EditOverlay& overlay, int vw, int vh
             putChar(px, py, '_'); putAttr(px, py, 0xF0); // blinking underscore
         }
     }
+}
+
+void ConsoleRenderer::drawConnectionEditOverlay(const ConnectionEditOverlay& overlay, int vw, int vh) {
+    if (!overlay.active) return;
+
+    int displayChars = 0;
+    std::vector<int> charBytes;
+    {
+        size_t i = 0;
+        while (i < overlay.text.size()) {
+            unsigned char b = static_cast<unsigned char>(overlay.text[i]);
+            charBytes.push_back(static_cast<int>(i));
+            if (b < 0x80) i += 1; else if (b < 0xE0) i += 2; else i += 3;
+            displayChars++;
+        }
+    }
+
+    int w = std::max(10, displayChars + 4);
+    int ox = overlay.screenX - w / 2;
+    int oy = overlay.screenY;
+    if (oy < 0 || oy >= vh) return;
+    uint16_t attr = 0x0F;
+
+    for (int x = ox; x < ox + w; x++) { putChar(x, oy, ' '); putAttr(x, oy, attr); }
+    putChar(ox, oy, '['); putAttr(ox, oy, attr);
+    putChar(ox + w - 1, oy, ']'); putAttr(ox + w - 1, oy, attr);
+
+    int textStart = ox + 2;
+    for (int i = 0; i < displayChars; i++) {
+        int bytePos = charBytes[i];
+        unsigned char b = static_cast<unsigned char>(overlay.text[bytePos]);
+        wchar_t ch;
+        if (b < 0x80) ch = b;
+        else if (b < 0xE0 && bytePos + 1 < static_cast<int>(overlay.text.size())) {
+            ch = ((b & 0x1F) << 6) | (static_cast<unsigned char>(overlay.text[bytePos + 1]) & 0x3F);
+        } else if (bytePos + 2 < static_cast<int>(overlay.text.size())) {
+            ch = ((b & 0x0F) << 12) | ((static_cast<unsigned char>(overlay.text[bytePos + 1]) & 0x3F) << 6) |
+                 (static_cast<unsigned char>(overlay.text[bytePos + 2]) & 0x3F);
+        } else { ch = '?'; }
+        int px = textStart + i;
+        if (px >= 0 && px < vw) { putChar(px, oy, ch); putAttr(px, oy, attr); }
+    }
+
+    int cursorPx = textStart + overlay.cursorCol;
+    cursorPx = std::max(textStart, std::min(ox + w - 2, cursorPx));
+    if (cursorPx >= 0 && cursorPx < vw) putAttr(cursorPx, oy, 0xF0);
 }
 
 void ConsoleRenderer::drawHUD(const Viewport& vp, int vw, int vh) {
