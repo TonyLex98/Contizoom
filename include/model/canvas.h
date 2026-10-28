@@ -80,7 +80,12 @@ public:
     std::string createFrame(const std::vector<std::string>& nodeUuids, const std::string& label = "Frame");
 
     // ---- Layout ------------------------------------------------------
+    // Grows the node's ancestors so it fits inside them, on every side: a
+    // child pulled past the left or top border moves that border out too
+    // (siblings keep their on-screen position).
     void expandParentToFit(const std::string& nodeUuid, double padding = 2.0);
+    // Pushes overlapping siblings apart, then grows the parent (in any
+    // direction) until it encloses all of them.
     bool resolveOverlaps(const std::string& parentUuid);
     void autoLayout();
 
@@ -155,6 +160,7 @@ private:
     void notifyChanged(bool force);
     void updateDepths(const std::string& uuid);
     void detachFromParent(Node& node);
+    void growLeftUp(Node& parent, double dx, double dy);
 };
 
 }  // namespace ic

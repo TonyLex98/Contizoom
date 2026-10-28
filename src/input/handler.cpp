@@ -280,6 +280,10 @@ void InputHandler::perform(Action action) {
 
     switch (action) {
         case Action::NewBox: createBox(); break;
+        case Action::NewBoxHere:
+            createBoxAt(context_.x, context_.y,
+                        context_.kind == ContextTarget::Kind::Node ? context_.uuid : std::string());
+            break;
         case Action::EditText:
             if (!first.empty()) startEditing(first, false);
             break;
@@ -424,6 +428,30 @@ void InputHandler::createBox() {
     startEditing(uuid, true);
 }
 
+// A new box with its top-left at a screen cell: a root box on empty canvas,
+// or a child of `parentId` at that spot inside it.
+void InputHandler::createBoxAt(int screenX, int screenY, const std::string& parentId) {
+    auto parent = canvas_.getNode(parentId);
+    const double wx = toWorldX(screenX), wy = toWorldY(screenY);
+    Rect r{wx, wy, 20, 4};
+    if (parent) {
+        const Rect origin = canvas_.computeWorldRect(parentId);
+        r.x = wx - origin.x;
+        r.y = wy - origin.y;
+    }
+    std::string uuid;
+    edit([&] {
+        uuid = canvas_.createNode("", r, "New box", parent ? parentId : std::string());
+        if (!uuid.empty() && parent) {
+            canvas_.expandParentToFit(uuid, 2.0);
+            canvas_.resolveOverlaps(parentId);
+        }
+    });
+    if (uuid.empty()) return;
+    select(uuid, false);
+    startEditing(uuid, true);
+}
+
 // ====================================================================
 // Mouse
 // ====================================================================
@@ -467,7 +495,9 @@ InputResult InputHandler::onMouseDown(const InputEvent& e) {
     const uint64_t now = clock::monotonicMillis();
     auto node = nodeAt(x, y);
     const std::string conn = connectionAt(x, y);
-    const std::string target = !conn.empty() ? conn : node ? node->uuid : std::string();
+    // Empty canvas counts as a target too, so double-clicking it can create a box.
+    static const std::string kEmptyCanvas = "#canvas";
+    const std::string target = !conn.empty() ? conn : node ? node->uuid : kEmptyCanvas;
     const bool doubleClick = isDoubleClick(target, x, y, now);
     lastClickTarget_ = target;
     lastClickTime_ = doubleClick ? 0 : now;  // a third click starts over
@@ -498,6 +528,10 @@ InputResult InputHandler::onMouseDown(const InputEvent& e) {
             auto sr = screenRects_.find(node->uuid);
             const bool onHeader = sr != screenRects_.end() && y == cellBox(sr->second).y;
             startEditing(node->uuid, onHeader);
+            return InputResult::Handled;
+        }
+        if (!e.mods.shift) {
+            createBoxAt(x, y, "");  // double-click on empty canvas
             return InputResult::Handled;
         }
     }
@@ -585,8 +619,9 @@ InputResult InputHandler::onMouseMove(const InputEvent& e) {
             for (const auto& [uuid, start] : drag_) {
                 auto node = canvas_.getNode(uuid);
                 if (!node) continue;
-                node->rect.x = start.rect.x + (x - pressX_) * start.unitsPerCellX;
-                node->rect.y = start.rect.y + (y - pressY_) * start.unitsPerCellY;
+                placeAtWorld(*node, start.world.x + (x - pressX_) * start.unitsPerCellX,
+                             start.world.y + (y - pressY_) * start.unitsPerCellY);
+                canvas_.markChanged(uuid);
                 canvas_.expandParentToFit(uuid, 2.0);
             }
             break;
@@ -655,9 +690,17 @@ void InputHandler::beginDrag() {
     for (const auto& uuid : topLevelSelection()) {
         auto node = canvas_.getNode(uuid);
         DragStart s;
-        s.rect = node->rect;
+        s.world = canvas_.computeWorldRect(uuid);
         if (unitsPerCell(*node, s.unitsPerCellX, s.unitsPerCellY)) drag_[uuid] = s;
     }
+}
+
+// Sets the node's parent-relative position so its top-left lands at the
+// given world point, using the parent's *current* position.
+void InputHandler::placeAtWorld(Node& node, double worldX, double worldY) {
+    const Rect origin = node.parentId.empty() ? Rect{0, 0, 0, 0} : canvas_.computeWorldRect(node.parentId);
+    node.rect.x = worldX - origin.x;
+    node.rect.y = worldY - origin.y;
 }
 
 void InputHandler::beginResize(const std::string& uuid, ResizeCorner corner) {
@@ -667,7 +710,7 @@ void InputHandler::beginResize(const std::string& uuid, ResizeCorner corner) {
     if (!unitsPerCell(*node, r.unitsPerCellX, r.unitsPerCellY)) return;
     r.uuid = uuid;
     r.corner = corner;
-    r.rect = node->rect;
+    r.world = canvas_.computeWorldRect(uuid);
 
     // A box can't shrink past the point where its children would have to go
     // below their own minimum size. The whole subtree is snapshotted so it
@@ -681,8 +724,8 @@ void InputHandler::beginResize(const std::string& uuid, ResizeCorner corner) {
             fx = std::max(fx, kMinChildW / c->rect.width);
             fy = std::max(fy, kMinChildH / c->rect.height);
         }
-        r.minW = std::max(r.minW, r.rect.width * fx);
-        r.minH = std::max(r.minH, r.rect.height * fy);
+        r.minW = std::max(r.minW, r.world.width * fx);
+        r.minH = std::max(r.minH, r.world.height * fy);
         for (const auto& d : canvas_.getDescendants(uuid)) r.descendants[d->uuid] = d->rect;
     }
     gestureSnapshot_ = history_.snapshot(canvas_);
@@ -695,8 +738,8 @@ void InputHandler::updateResize(int x, int y) {
     if (!node) return;
     const double dx = (x - pressX_) * resize_.unitsPerCellX;
     const double dy = (y - pressY_) * resize_.unitsPerCellY;
-    const Rect& s = resize_.rect;
-    Rect r = s;
+    const Rect& s = resize_.world;
+    Rect r = s;  // new world rect
 
     const ResizeCorner c = resize_.corner;
     const bool left = c == ResizeCorner::TopLeft || c == ResizeCorner::BottomLeft;
@@ -715,7 +758,9 @@ void InputHandler::updateResize(int x, int y) {
     } else {
         r.height = std::max(resize_.minH, s.height + dy);
     }
-    node->rect = r;
+    node->rect.width = r.width;
+    node->rect.height = r.height;
+    placeAtWorld(*node, r.x, r.y);
 
     const double fx = s.width > 0 ? r.width / s.width : 1.0;
     const double fy = s.height > 0 ? r.height / s.height : 1.0;

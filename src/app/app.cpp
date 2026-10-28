@@ -30,6 +30,7 @@ enum MenuId {
     kFit,
     kQuit,
     kProjectMenu,
+    kNewBoxHere,
     // Box
     kRename,
     kEditText,
@@ -239,7 +240,7 @@ void App::showContextMenu() {
     switch (t.kind) {
         case ContextTarget::Kind::Node: showNodeMenu(t.x, t.y); break;
         case ContextTarget::Kind::Connection: showConnectionMenu(t.x, t.y); break;
-        case ContextTarget::Kind::Canvas: showProjectMenu(t.x, t.y); break;
+        case ContextTarget::Kind::Canvas: showProjectMenu(t.x, t.y, true); break;
     }
 }
 
@@ -248,7 +249,7 @@ void App::showNodeMenu(int x, int y) {
     std::vector<MenuItem> items = {
         MenuItem::item(kRename, "Rename", "F2", single),
         MenuItem::item(kEditText, "Edit text", "E", single),
-        MenuItem::item(kNewChild, "New box inside", "N", single),
+        MenuItem::item(kNewChild, "New box inside, here", "N"),
         MenuItem::item(kZoomTo, "Zoom to", "Enter"),
         MenuItem::line(),
         MenuItem::item(kFrame, "Wrap in frame", "F"),
@@ -264,7 +265,7 @@ void App::showNodeMenu(int x, int y) {
     switch (menu.choose(title, items, x, y, renderer_.width(), renderer_.height())) {
         case kRename: handler_->perform(Action::Rename); break;
         case kEditText: handler_->perform(Action::EditText); break;
-        case kNewChild: handler_->perform(Action::NewBox); break;
+        case kNewChild: handler_->perform(Action::NewBoxHere); break;
         case kZoomTo: handler_->perform(Action::ZoomTo); break;
         case kFrame: handler_->perform(Action::Frame); break;
         case kPromote: handler_->perform(Action::Promote); break;
@@ -314,9 +315,14 @@ void App::showConnectionMenu(int x, int y) {
     }
 }
 
-void App::showProjectMenu(int x, int y) {
+void App::showProjectMenu(int x, int y, bool onCanvas) {
     const bool open = projects_.activeProject() != nullptr;
-    std::vector<MenuItem> items = {
+    std::vector<MenuItem> items;
+    if (onCanvas && handler_) {
+        items.push_back(MenuItem::item(kNewBoxHere, "New box here", "Dbl-click"));
+        items.push_back(MenuItem::line());
+    }
+    const std::vector<MenuItem> projectItems = {
         MenuItem::item(kNew, "New project", "Ctrl+N"),
         MenuItem::item(kOpen, "Open project..."),
         MenuItem::item(kSwitch, "Switch project...", "", projects_.projects().size() > 1),
@@ -333,9 +339,11 @@ void App::showProjectMenu(int x, int y) {
         MenuItem::line(),
         MenuItem::item(kQuit, "Quit", "Ctrl+Q"),
     };
+    items.insert(items.end(), projectItems.begin(), projectItems.end());
 
     PopupMenu menu(input_, output_);
-    switch (menu.choose("Project", items, x, y, renderer_.width(), renderer_.height())) {
+    switch (menu.choose(onCanvas ? "Canvas" : "Project", items, x, y, renderer_.width(), renderer_.height())) {
+        case kNewBoxHere: handler_->perform(Action::NewBoxHere); break;
         case kNew: handle(InputResult::RequestNew); break;
         case kOpen: openProjectDialog(x, y); break;
         case kSwitch: switchProjectDialog(x, y); break;

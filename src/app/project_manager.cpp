@@ -2,6 +2,7 @@
 #include "model/canvas.h"
 #include "storage/markdown_export.h"
 #include "util/clock.h"
+#include "util/file.h"
 #include "util/path.h"
 #include "util/process.h"
 #include "util/uuid.h"
@@ -10,8 +11,6 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
-#include <sstream>
 
 namespace ic {
 namespace fs = std::filesystem;
@@ -91,31 +90,43 @@ ProjectInfo* ProjectManager::find(const std::string& uuid) {
 // Locks
 // ====================================================================
 
+namespace {
+
+// Lock file content: "<pid> <session token>".
+bool readLock(const fs::path& lock, unsigned long& pid, std::string& token) {
+    std::string text;
+    if (!file::read(lock, text)) return false;
+    char* end = nullptr;
+    pid = std::strtoul(text.c_str(), &end, 10);
+    if (end == text.c_str()) return false;
+    token = std::string(end);
+    token.erase(0, token.find_first_not_of(" \t"));
+    token.erase(token.find_last_not_of(" \t\r\n") + 1);
+    return !token.empty();
+}
+
+}  // namespace
+
 void ProjectManager::acquireLock(const ProjectInfo& info) {
     const fs::path lock = path::fromUtf8(info.path) / kLockFile;
-    std::ifstream in(lock);
     unsigned long pid = 0;
     std::string token;
-    if (in >> pid >> token && token != lockToken_ && process::isAlive(pid)) {
+    if (readLock(lock, pid, token) && token != lockToken_ && process::isAlive(pid)) {
         warning_ = "\"" + info.name + "\" seems to be open in another window too (process " + std::to_string(pid) +
                    "); changes made in both will overwrite each other";
     }
-    in.close();
     std::error_code ec;
     if (!fs::is_directory(lock.parent_path(), ec)) return;  // not on disk yet
-    std::ofstream(lock, std::ios::trunc) << process::currentId() << ' ' << lockToken_ << '\n';
+    file::write(lock, std::to_string(process::currentId()) + " " + lockToken_ + "\n");
 }
 
 void ProjectManager::releaseLock(const ProjectInfo& info) {
     if (info.path.empty()) return;
     const fs::path lock = path::fromUtf8(info.path) / kLockFile;
-    std::ifstream in(lock);
     unsigned long pid = 0;
     std::string token;
-    const bool ours = static_cast<bool>(in >> pid >> token) && token == lockToken_;
-    in.close();
     std::error_code ec;
-    if (ours) fs::remove(lock, ec);
+    if (readLock(lock, pid, token) && token == lockToken_) fs::remove(lock, ec);
 }
 
 // ====================================================================
@@ -304,10 +315,7 @@ bool ProjectManager::exportMarkdown(std::string& outPath) {
 
     fs::path target = path::fromUtf8(info->path);
     target.replace_extension(".md");
-    std::ofstream out(target, std::ios::binary | std::ios::trunc);
-    out << ic::exportMarkdown(*canvas);
-    out.flush();
-    if (!out) {
+    if (!file::write(target, ic::exportMarkdown(*canvas))) {
         lastError_ = "cannot write " + path::toUtf8(target);
         return false;
     }

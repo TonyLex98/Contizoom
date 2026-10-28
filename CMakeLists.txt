@@ -39,11 +39,33 @@ if(MINGW)
     target_link_options(ic_options INTERFACE -static)
 endif()
 
+# Small release binaries. Speed is irrelevant for a console UI, size is what
+# people notice when downloading: optimize for size, drop unused functions
+# and data, strip symbols. MSVC links its runtime statically for the same
+# self-contained single .exe as MinGW.
+option(IC_SMALL_RELEASE "Optimize release builds for size" ON)
+if(IC_SMALL_RELEASE)
+    if(MSVC)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        target_compile_options(ic_options INTERFACE $<$<CONFIG:Release>:/O1 /Gy>)
+        target_link_options(ic_options INTERFACE $<$<CONFIG:Release>:/OPT:REF /OPT:ICF>)
+    else()
+        target_compile_options(ic_options INTERFACE
+            $<$<CONFIG:Release>:-Os -ffunction-sections -fdata-sections>)
+        if(APPLE)
+            target_link_options(ic_options INTERFACE $<$<CONFIG:Release>:-Wl,-dead_strip>)
+        else()
+            target_link_options(ic_options INTERFACE $<$<CONFIG:Release>:-Wl,--gc-sections -s>)
+        endif()
+    endif()
+endif()
+
 # ----------------------------------------------------------------------------
 # Core: model, storage, layout/rendering into a cell buffer, input logic.
 # Platform independent, so it builds and is tested on any OS.
 # ----------------------------------------------------------------------------
 add_library(infinite_canvas_core STATIC
+    src/util/file.cpp
     src/util/json.cpp
     src/util/process.cpp
     src/model/node.cpp

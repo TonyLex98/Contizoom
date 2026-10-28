@@ -3,7 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <sstream>
+#include <cstdio>
 #include <vector>
 
 namespace ic {
@@ -614,15 +614,13 @@ void ConsoleRenderer::drawHud(const Canvas& canvas, const UiState& ui, const Hud
     const uint16_t barAttr = color::make(color::White, color::Blue);
     buffer_.fill(0, 0, w, 1, L' ', barAttr);
 
-    std::ostringstream zoom;
-    zoom.setf(std::ios::fixed);
     const double pct = canvas.viewport.scale * 100.0;
-    zoom.precision(pct >= 10.0 ? 0 : pct >= 0.1 ? 2 : 4);
-    zoom << pct;
+    char zoom[32];
+    std::snprintf(zoom, sizeof(zoom), "%.*f", pct >= 10.0 ? 0 : pct >= 0.1 ? 2 : 4, pct);
 
     std::string left = " Infinite Canvas  │  " + (hud.projectName.empty() ? std::string("Untitled") : hud.projectName);
     if (hud.unsaved) left += " (not saved yet)";
-    left += "  │  zoom " + zoom.str() + "%  │  " + std::to_string(canvas.allNodes().size()) + " boxes";
+    left += "  │  zoom " + std::string(zoom) + "%  │  " + std::to_string(canvas.allNodes().size()) + " boxes";
     buffer_.text(0, 0, left, barAttr, w);
 
     if (!hud.status.empty()) {
@@ -656,7 +654,7 @@ void ConsoleRenderer::drawHud(const Canvas& canvas, const UiState& ui, const Hud
         help = " Connection (" + style + "):   T style   V reverse   F2/Enter rename   X delete   "
                "Right-click menu   Esc deselect";
     } else {
-        help = " N new   Dbl-click edit   F2 rename   Drag move   Corner resize   Drag • connect   "
+        help = " N / dbl-click empty: new box   Dbl-click edit   F2 rename   Drag move   Corner resize   Drag • connect   "
                "Tab/Shift+Tab un/nest   F frame   X delete   Ctrl+Z undo   Wheel zoom   WASD pan   0 fit   "
                "Shift+drag select   Right-click menu   Ctrl+Q quit";
     }

@@ -32,7 +32,7 @@ TEST(renderer_demo_snapshot_shows_content_and_chrome) {
     CHECK(text.find("Welcome to Infinite Canvas") != std::string::npos);
     CHECK(text.find("OUTLINE") != std::string::npos);
     CHECK(text.find("Basics") != std::string::npos);
-    CHECK(text.find("N new") != std::string::npos);  // help row
+    CHECK(text.find("new box") != std::string::npos);  // help row
 }
 
 TEST(renderer_draws_box_with_unicode_name) {

@@ -11,35 +11,35 @@ UTF-8 handling, layout engine and test harness are all part of the project.
 ```text
  Infinite Canvas  │  Welcome  │  zoom 48%  │  12 boxes
  OUTLINE                 │
-                         │              ┌────────────────────────Welcome to Infinite Canvas────────────────────────┐
- ▪ Welcome to Infinite C…│              │A zoomable outline: boxes inside boxes, as deep as you like.              │
-   ▪ Basics              │              │ ┌───────────Basics────────────┐     ┌────────────Structure─────────────┐ │
-     · Try it            │              │ │N          new box (inside th│     │Tab        lift a box out of its p│ │
-   ▪ Structure           │              │ │Dbl-click  edit text; on the │     │Shift+Tab  nest it into the box ab│ │
-     · Idea              │              │ │Drag       move   Corner   re│     │F          wrap the selection in a│ │
-     · Plan              │              │ │ ┌───Try it───┐              │     │┌──Idea──┐  ┌──Plan──┐  ┌──Done──┐│ │
-     · Done              │              │ │ │S           │              │     ││        │─►│        │─►│        ││ │
-   · Navigation          │              │ │ └────────────┘              │     │└────────┘  └────────┘  └────────┘│ │
-   ▪ Connections         │              │ │                             │     │                                  │ │
-     · From              │              │ └─────────────────────────────┘     └──────────────────────────────────┘ │
-     · To                │              │                                                                          │
-   · Projects            │              │                                                                          │
-                         │              │                                                                          │
-                         │              │                                                                          │
-                         │              │ ┌─────────Navigation──────────┐     ┌─────────Connections──────────┐     │
-                         │              │ │Wheel / + -  zoom      WASD /│     │Hover a box, drag from one of │     │
-                         │              │ │0            fit everything o│     │Click a line: T style, V rever│     │
-                         │              │ │Enter        zoom to the sele│     │                              │     │
-                         │              │ │Sidebar      click a box in t│-----│                              │     │
-                         │              │ │                             │     │  ┌──From──┐      ┌───To───┐  │     │
-                         │              │ │                             │     │  └────────┘─────►└────────┘  │     │
-                         │              │ │                             │     │                              │     │
-                         │              │ └─────────────────────────────┘     └──────────────────────────────┘     │
-                         │              │                                                                          │
-                         │              │                                                                          │
-                         │              │                                                                          │
-                         │              │                                                                          │
-                         │              │ ┌─────────────────────────────Projects─────────────────────────────┐     │
+                         │               ┌───────────────────────Welcome to Infinite Canvas───────────────────────┐
+ ▪ Welcome to Infinite C…│               │A zoomable outline: boxes inside boxes, as deep as you like.            │
+   ▪ Basics              │               │ ┌───────────Basics───────────┐     ┌────────────Structure─────────────┐│
+     · Try it            │               │ │N          new box (inside t│     │Tab        lift a box out of its p││
+   ▪ Structure           │               │ │Dbl-click  edit text; on the│     │Shift+Tab  nest it into the box ab││
+     · Idea              │               │ │Drag       move   Corner   r│     │F          wrap the selection in a││
+     · Plan              │               │ │ ┌──Try it───┐              │     │                                  ││
+     · Done              │               │ │ │S          │              │     │┌──Idea──┐  ┌──Plan──┐  ┌─Done──┐ ││
+   · Navigation          │               │ │ └───────────┘              │     │└────────┘─►└────────┘─►└───────┘ ││
+   ▪ Connections         │               │ │                            │     │                                  ││
+     · From              │               │ └────────────────────────────┘     └──────────────────────────────────┘│
+     · To                │               │                                                                        │
+   · Projects            │               │                                                                        │
+                         │               │                                                                        │
+                         │               │                                                                        │
+                         │               │ ┌─────────Navigation─────────┐     ┌─────────Connections──────────┐    │
+                         │               │ │Wheel / + -  zoom      WASD │     │Hover a box, drag from one of │    │
+                         │               │ │0            fit everything │     │Click a line: T style, V rever│    │
+                         │               │ │Enter        zoom to the sel│     │                              │    │
+                         │               │ │Sidebar      click a box in │-----│                              │    │
+                         │               │ │                            │     │  ┌──From──┐      ┌───To───┐  │    │
+                         │               │ │                            │     │  └────────┘─────►└────────┘  │    │
+                         │               │ │                            │     │                              │    │
+                         │               │ └────────────────────────────┘     └──────────────────────────────┘    │
+                         │               │                                                                        │
+                         │               │                                                                        │
+                         │               │                                                                        │
+                         │               │                                                                        │
+                         │               │ ┌────────────────────────────Projects─────────────────────────────┐    │
 ```
 
 <sub>The screenshot above is real program output: `infinite_canvas --snapshot out.txt` renders a
@@ -78,7 +78,7 @@ picture on Linux.</sub>
 
 | Action | Input |
 |---|---|
-| New box (inside the selected one) | `N` |
+| New box (inside the selected one / at a spot) | `N` / double-click empty canvas, or right-click → New box here |
 | Select / add to selection / area select | Click / `Shift`+click / `Shift`+drag on empty canvas |
 | Move | Drag a box |
 | Edit text / rename | Double-click body / header, or `E` / `F2` |

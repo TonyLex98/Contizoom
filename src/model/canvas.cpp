@@ -425,13 +425,42 @@ std::string Canvas::createFrame(const std::vector<std::string>& nodeUuids, const
 // Layout
 // ====================================================================
 
+// Grows `parent` by dx to the left and dy upwards. Its children are shifted
+// by the same amount, so nothing inside moves on screen: only the parent's
+// left/top border does.
+void Canvas::growLeftUp(Node& parent, double dx, double dy) {
+    if (dx <= 0 && dy <= 0) return;
+    dx = std::max(0.0, dx);
+    dy = std::max(0.0, dy);
+    parent.rect.x -= dx;
+    parent.rect.y -= dy;
+    parent.rect.width += dx;
+    parent.rect.height += dy;
+    for (const auto& cid : parent.childrenUuids) {
+        if (auto c = getNode(cid)) {
+            c->rect.x += dx;
+            c->rect.y += dy;
+            markChanged(cid);
+        }
+    }
+    markChanged(parent.uuid);
+}
+
 void Canvas::expandParentToFit(const std::string& nodeUuid, double padding) {
     auto node = getNode(nodeUuid);
     if (!node) return;
     auto parent = getNode(node->parentId);
     if (!parent) return;
 
-    bool expanded = false;
+    // Left/top: the parent's border follows a child pulled past it. The top
+    // keeps room for the parent's header row.
+    constexpr double kHeaderRows = 2.0;
+    const double dx = padding - node->rect.x;
+    const double dy = kHeaderRows - node->rect.y;
+    bool expanded = dx > 0 || dy > 0;
+    growLeftUp(*parent, dx, dy);
+
+    // Right/bottom.
     if (node->rect.right() + padding > parent->rect.width) {
         parent->rect.width = node->rect.right() + padding;
         expanded = true;
@@ -461,17 +490,6 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
     }
 
     bool resolved = false;
-    auto clampInside = [&](Node& n) {
-        if (n.rect.y < textZoneY) {
-            n.rect.y = textZoneY;
-            resolved = true;
-        }
-        if (n.rect.x < marginX) {
-            n.rect.x = marginX;
-            resolved = true;
-        }
-    };
-    for (auto& k : kids) clampInside(*k);
 
     // Pairwise push-apart along the axis of least overlap. Bounded so a
     // pathological layout can't spin forever.
@@ -500,8 +518,6 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
                     a.rect.y -= dir * push;
                     b.rect.y += dir * push;
                 }
-                clampInside(a);
-                clampInside(b);
                 anyOverlap = true;
             }
         }
@@ -510,6 +526,17 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
     }
 
     for (auto& k : kids) markChanged(k->uuid);
+
+    // Make the parent enclose its children on every side. Children pulled
+    // past the left/top border (or into the parent's text) grow the parent
+    // that way instead of being shoved back inside.
+    double minX = kids.front()->rect.x, minY = kids.front()->rect.y;
+    for (const auto& k : kids) {
+        minX = std::min(minX, k->rect.x);
+        minY = std::min(minY, k->rect.y);
+    }
+    bool grew = minX < marginX || minY < textZoneY;
+    growLeftUp(*parent, marginX - minX, textZoneY - minY);
 
     double maxX = marginX, maxY = textZoneY;
     for (const auto& k : kids) {
@@ -520,6 +547,9 @@ bool Canvas::resolveOverlaps(const std::string& parentUuid) {
         parent->rect.width = std::max(parent->rect.width, maxX);
         parent->rect.height = std::max(parent->rect.height, maxY);
         markChanged(parentUuid);
+        grew = true;
+    }
+    if (grew) {
         resolved = true;
         if (!parent->parentId.empty()) resolveOverlaps(parent->parentId);
     }

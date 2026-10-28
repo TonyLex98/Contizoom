@@ -1,40 +1,40 @@
  Infinite Canvas  │  Welcome  │  zoom 48%  │  12 boxes
  OUTLINE                 │
-                         │              ┌────────────────────────Welcome to Infinite Canvas────────────────────────┐
- ▪ Welcome to Infinite C…│              │A zoomable outline: boxes inside boxes, as deep as you like.              │
-   ▪ Basics              │              │ ┌───────────Basics────────────┐     ┌────────────Structure─────────────┐ │
-     · Try it            │              │ │N          new box (inside th│     │Tab        lift a box out of its p│ │
-   ▪ Structure           │              │ │Dbl-click  edit text; on the │     │Shift+Tab  nest it into the box ab│ │
-     · Idea              │              │ │Drag       move   Corner   re│     │F          wrap the selection in a│ │
-     · Plan              │              │ │ ┌───Try it───┐              │     │┌──Idea──┐  ┌──Plan──┐  ┌──Done──┐│ │
-     · Done              │              │ │ │S           │              │     ││        │─►│        │─►│        ││ │
-   · Navigation          │              │ │ └────────────┘              │     │└────────┘  └────────┘  └────────┘│ │
-   ▪ Connections         │              │ │                             │     │                                  │ │
-     · From              │              │ └─────────────────────────────┘     └──────────────────────────────────┘ │
-     · To                │              │                                                                          │
-   · Projects            │              │                                                                          │
-                         │              │                                                                          │
-                         │              │                                                                          │
-                         │              │ ┌─────────Navigation──────────┐     ┌─────────Connections──────────┐     │
-                         │              │ │Wheel / + -  zoom      WASD /│     │Hover a box, drag from one of │     │
-                         │              │ │0            fit everything o│     │Click a line: T style, V rever│     │
-                         │              │ │Enter        zoom to the sele│     │                              │     │
-                         │              │ │Sidebar      click a box in t│-----│                              │     │
-                         │              │ │                             │     │  ┌──From──┐      ┌───To───┐  │     │
-                         │              │ │                             │     │  └────────┘─────►└────────┘  │     │
-                         │              │ │                             │     │                              │     │
-                         │              │ └─────────────────────────────┘     └──────────────────────────────┘     │
-                         │              │                                                                          │
-                         │              │                                                                          │
-                         │              │                                                                          │
-                         │              │                                                                          │
-                         │              │ ┌─────────────────────────────Projects─────────────────────────────┐     │
-                         │              │ │Every edit is saved automatically; Ctrl+Z / Ctrl+Y undo and redo. │     │
-                         │              │ │Right-click a box, a line or empty space for its menu (open, copy,│     │
-                         │              │ │                                                                  │     │
-                         │              │ └──────────────────────────────────────────────────────────────────┘     │
-                         │              └──────────────────────────────────────────────────────────────────────────┘
+                         │               ┌───────────────────────Welcome to Infinite Canvas───────────────────────┐
+ ▪ Welcome to Infinite C…│               │A zoomable outline: boxes inside boxes, as deep as you like.            │
+   ▪ Basics              │               │ ┌───────────Basics───────────┐     ┌────────────Structure─────────────┐│
+     · Try it            │               │ │N          new box (inside t│     │Tab        lift a box out of its p││
+   ▪ Structure           │               │ │Dbl-click  edit text; on the│     │Shift+Tab  nest it into the box ab││
+     · Idea              │               │ │Drag       move   Corner   r│     │F          wrap the selection in a││
+     · Plan              │               │ │ ┌──Try it───┐              │     │                                  ││
+     · Done              │               │ │ │S          │              │     │┌──Idea──┐  ┌──Plan──┐  ┌─Done──┐ ││
+   · Navigation          │               │ │ └───────────┘              │     │└────────┘─►└────────┘─►└───────┘ ││
+   ▪ Connections         │               │ │                            │     │                                  ││
+     · From              │               │ └────────────────────────────┘     └──────────────────────────────────┘│
+     · To                │               │                                                                        │
+   · Projects            │               │                                                                        │
+                         │               │                                                                        │
+                         │               │                                                                        │
+                         │               │ ┌─────────Navigation─────────┐     ┌─────────Connections──────────┐    │
+                         │               │ │Wheel / + -  zoom      WASD │     │Hover a box, drag from one of │    │
+                         │               │ │0            fit everything │     │Click a line: T style, V rever│    │
+                         │               │ │Enter        zoom to the sel│     │                              │    │
+                         │               │ │Sidebar      click a box in │-----│                              │    │
+                         │               │ │                            │     │  ┌──From──┐      ┌───To───┐  │    │
+                         │               │ │                            │     │  └────────┘─────►└────────┘  │    │
+                         │               │ │                            │     │                              │    │
+                         │               │ └────────────────────────────┘     └──────────────────────────────┘    │
+                         │               │                                                                        │
+                         │               │                                                                        │
+                         │               │                                                                        │
+                         │               │                                                                        │
+                         │               │ ┌────────────────────────────Projects─────────────────────────────┐    │
+                         │               │ │Every edit is saved automatically; Ctrl+Z / Ctrl+Y undo and redo.│    │
+                         │               │ │Right-click a box, a line or empty space for its menu (open, copy│    │
+                         │               │ │                                                                 │    │
+                         │               │ └─────────────────────────────────────────────────────────────────┘    │
+                         │               └────────────────────────────────────────────────────────────────────────┘
                          │
                          │
                          │
- N new   Dbl-click edit   F2 rename   Drag move   Corner resize   Drag • connect   Tab/Shift+Tab un/nest   F frame   X delete   Ctrl
+ N / dbl-click empty: new box   Dbl-click edit   F2 rename   Drag move   Corner resize   Drag • connect   Tab/Shift+Tab un/nest   F

@@ -1,14 +1,13 @@
 #include "storage/json_storage.h"
 #include "model/canvas.h"
 #include "storage/document_json.h"
+#include "util/file.h"
 #include "util/json.h"
 #include "util/path.h"
 #include "version/version.h"
 
 #include <algorithm>
-#include <fstream>
 #include <set>
-#include <sstream>
 #include <system_error>
 
 namespace ic {
@@ -32,30 +31,18 @@ fs::path nodePath(const std::string& canvasPath, const std::string& uuid) {
 }
 
 bool readFile(const fs::path& p, std::string& out) {
-    std::ifstream in(p, std::ios::binary);
-    if (!in) return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
+    return file::read(p, out);
 }
 
 // Write-to-temp-then-rename so readers only ever see a complete file.
 bool writeFileAtomic(const fs::path& p, const std::string& content, std::string& error) {
     fs::path tmp = p;
     tmp += ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            error = "cannot write " + path::toUtf8(tmp);
-            return false;
-        }
-        out << content;
-        out.flush();
-        if (!out) {
-            error = "write failed (disk full?): " + path::toUtf8(tmp);
-            return false;
-        }
+    if (!file::write(tmp, content)) {
+        error = "cannot write " + path::toUtf8(tmp) + " (disk full or no access?)";
+        std::error_code ignored;
+        fs::remove(tmp, ignored);
+        return false;
     }
     std::error_code ec;
     fs::rename(tmp, p, ec);

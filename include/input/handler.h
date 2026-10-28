@@ -27,6 +27,7 @@ struct ContextTarget {
 // Editing commands, available from keys and from context menus.
 enum class Action {
     NewBox,
+    NewBoxHere,  // at the last right-click (inside the box under it, if any)
     EditText,
     Rename,
     Delete,
@@ -94,8 +95,11 @@ private:
     std::string pressNode_;
     std::string gestureSnapshot_;  // document before a drag/resize/connect, for undo
 
+    // Drags and resizes work in world coordinates: the parent may grow
+    // left/up under the box while it's being dragged (which shifts the box's
+    // parent-relative coordinates), and the box must still follow the mouse.
     struct DragStart {
-        Rect rect;
+        Rect world;
         double unitsPerCellX = 1, unitsPerCellY = 1;  // canvas units per screen cell
     };
     std::map<std::string, DragStart> drag_;
@@ -103,7 +107,7 @@ private:
     struct ResizeStart {
         std::string uuid;
         ResizeCorner corner = ResizeCorner::None;
-        Rect rect;
+        Rect world;
         double unitsPerCellX = 1, unitsPerCellY = 1;
         double minW = 6, minH = 3;
         std::map<std::string, Rect> descendants;  // subtree rescaled with the box
@@ -146,11 +150,13 @@ private:
     void selectConnection(const std::string& uuid);
     std::vector<std::string> topLevelSelection() const;
     void beginDrag();
+    void placeAtWorld(Node& node, double worldX, double worldY);
     void beginResize(const std::string& uuid, ResizeCorner corner);
     void updateResize(int x, int y);
     void finishConnect(int x, int y);
     void finishAreaSelect();
     void createBox();
+    void createBoxAt(int screenX, int screenY, const std::string& parentId);
     void pan(double cellsX, double cellsY);
     void zoomAt(double factor, double sx, double sy);
     std::pair<int, int> connectionLabelCell(const std::string& connUuid) const;

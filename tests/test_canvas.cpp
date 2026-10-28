@@ -143,6 +143,43 @@ TEST(canvas_resolve_overlaps_separates_siblings) {
     CHECK(c.getNode(p)->rect.width >= c.getNode(b)->rect.right());
 }
 
+TEST(canvas_parent_grows_left_and_up_keeping_siblings_in_place) {
+    Tree t;
+    const Rect sibBefore = t.c.computeWorldRect(t.sib);
+    const Rect rootBefore = t.c.computeWorldRect(t.root);
+
+    // Pull `a` past root's left and top border.
+    auto a = t.c.getNode(t.a);
+    a->rect.x = -15;
+    a->rect.y = -8;
+    const Rect aWorld = t.c.computeWorldRect(t.a);
+    t.c.expandParentToFit(t.a, 2.0);
+
+    const Rect rootAfter = t.c.computeWorldRect(t.root);
+    CHECK(rootAfter.x < rootBefore.x);  // left border moved out
+    CHECK(rootAfter.y < rootBefore.y);  // top border moved out
+    CHECK(rootAfter.x <= aWorld.x - 2.0 + 1e-9);
+    CHECK_NEAR(rootAfter.right(), rootBefore.right(), 1e-9);  // right border unchanged
+
+    // Nothing inside moved on screen.
+    const Rect aAfter = t.c.computeWorldRect(t.a);
+    CHECK_NEAR(aAfter.x, aWorld.x, 1e-9);
+    CHECK_NEAR(aAfter.y, aWorld.y, 1e-9);
+    CHECK_NEAR(t.c.computeWorldRect(t.sib).x, sibBefore.x, 1e-9);
+    CHECK_NEAR(t.c.computeWorldRect(t.sib).y, sibBefore.y, 1e-9);
+    CHECK(t.c.getNode(t.a)->rect.x >= 2.0 - 1e-9);  // a is inside root again
+}
+
+TEST(canvas_resolve_overlaps_grows_up_instead_of_shoving_child_down) {
+    Canvas c;
+    const std::string p = c.createNode("", {100, 100, 40, 30}, "p");
+    const std::string a = c.createNode("", {5, 0.5, 10, 5}, "a", p);  // inside the header/text zone
+    const Rect aWorld = c.computeWorldRect(a);
+    c.resolveOverlaps(p);
+    CHECK_NEAR(c.computeWorldRect(a).y, aWorld.y, 1e-9);  // the child stays where it was dropped
+    CHECK(c.computeWorldRect(p).y < 100.0);              // the parent's top moved up
+}
+
 TEST(canvas_change_tracking_batches_until_flush) {
     Tree t;
     t.c.discardPendingChanges();

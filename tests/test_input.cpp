@@ -86,6 +86,64 @@ TEST(input_dragging_parent_and_child_moves_child_once) {
     CHECK_NEAR(h.canvas.getNode(c)->rect.x, 4.0, 1e-9);  // relative position unchanged
 }
 
+TEST(input_dragging_child_out_left_grows_parent_and_follows_mouse) {
+    Harness h;
+    const std::string p = h.canvas.createNode("", {0, 0, 50, 20}, "p");
+    const std::string c = h.canvas.createNode("", {5, 6, 10, 5}, "c", p);
+    const std::string s = h.canvas.createNode("", {30, 6, 10, 5}, "s", p);
+    h.frame();
+    const Rect cStart = h.canvas.computeWorldRect(c);
+    const Rect sStart = h.canvas.computeWorldRect(s);
+    const double parentLeft = h.canvas.computeWorldRect(p).x;
+
+    const auto [x, y] = h.bodyOf(c);
+    h.mouse(InputType::MouseDown, x, y);
+    // Drag 12 cells left and 6 up in steps, like a real mouse.
+    for (int i = 1; i <= 6; ++i) h.mouse(InputType::MouseMove, x - 2 * i, y - i);
+    h.mouse(InputType::MouseUp, x - 12, y - 6);
+
+    const Rect cEnd = h.canvas.computeWorldRect(c);
+    CHECK_NEAR(cEnd.x, cStart.x - 12.0, 1e-9);  // exactly under the mouse (scale 1)
+    CHECK_NEAR(cEnd.y, cStart.y - 6.0, 1e-9);
+    CHECK(h.canvas.computeWorldRect(p).x < parentLeft);  // the left border followed
+    CHECK(h.canvas.computeWorldRect(p).x <= cEnd.x);
+    CHECK_NEAR(h.canvas.computeWorldRect(s).x, sStart.x, 1e-9);  // the sibling didn't move
+    CHECK_NEAR(h.canvas.computeWorldRect(s).y, sStart.y, 1e-9);
+}
+
+TEST(input_double_click_on_empty_canvas_creates_box_there) {
+    Harness h;
+    h.frame();
+    const CanvasArea a = h.renderer.canvasArea();
+    const int x = a.left + 10, y = a.top + 5;
+    h.mouse(InputType::MouseDown, x, y);
+    h.mouse(InputType::MouseUp, x, y);
+    h.mouse(InputType::MouseDown, x, y);
+    h.mouse(InputType::MouseUp, x, y);
+    CHECK_EQ(h.canvas.allNodes().size(), static_cast<size_t>(1));
+    const auto& node = h.canvas.allNodes().begin()->second;
+    CHECK(node->parentId.empty());
+    CHECK_NEAR(node->rect.x, h.canvas.viewport.centerX + (x - a.centerX()), 1e-9);  // at the click
+    CHECK(h.ui.nodeEditor.active && h.ui.nodeEditor.editingName);
+}
+
+TEST(input_context_new_box_here_inside_a_box) {
+    Harness h;
+    const std::string p = h.canvas.createNode("", {0, 0, 60, 20}, "p");
+    h.frame();
+    const CellBox b = cellBox(h.renderer.screenRects().at(p));
+    InputEvent e;
+    e.type = InputType::MouseDown;
+    e.button = MouseButton::Right;
+    e.mouseX = b.x + 30;
+    e.mouseY = b.y + 10;
+    h.handler.process(e);
+    h.handler.perform(Action::NewBoxHere);
+    CHECK_EQ(h.canvas.getNode(p)->childrenUuids.size(), static_cast<size_t>(1));
+    const auto child = h.canvas.getNode(h.canvas.getNode(p)->childrenUuids.front());
+    CHECK_NEAR(h.canvas.computeWorldRect(child->uuid).x, h.canvas.viewport.centerX + (b.x + 30 - h.renderer.canvasArea().centerX()), 1e-9);
+}
+
 TEST(input_double_click_header_renames_with_unicode) {
     Harness h;
     const std::string id = h.canvas.createNode("", {0, 0, 24, 8}, "old");

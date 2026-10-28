@@ -1,6 +1,7 @@
 #include "app/demo.h"
 #include "model/canvas.h"
 #include "storage/json_storage.h"
+#include "util/file.h"
 #include "util/path.h"
 #include "version/version.h"
 
@@ -9,24 +10,27 @@
 #endif
 
 #include <cstdio>
-#include <fstream>
-#include <iostream>
 #include <string>
 
 namespace {
 
 void printUsage() {
-    std::cout << "Infinite Canvas " IC_VERSION_STRING " - zoomable outliner for the terminal\n"
-                 "\n"
-                 "Usage:\n"
-                 "  infinite_canvas                      open the welcome project\n"
-                 "  infinite_canvas <project.canvas>     open a project\n"
-                 "  infinite_canvas -n <name>            start a new, unsaved project\n"
-                 "  infinite_canvas --snapshot <out.txt> [project.canvas] [--size WxH]\n"
-                 "                                       render a project (default: the demo) to a text file\n"
-                 "  infinite_canvas --version | --help\n"
-                 "\n"
-                 "Project format " IC_STORAGE_FORMAT_STRING "\n";
+    std::fputs("Infinite Canvas " IC_VERSION_STRING " - zoomable outliner for the terminal\n"
+               "\n"
+               "Usage:\n"
+               "  infinite_canvas                      open the welcome project\n"
+               "  infinite_canvas <project.canvas>     open a project\n"
+               "  infinite_canvas -n <name>            start a new project\n"
+               "  infinite_canvas --snapshot <out.txt> [project.canvas] [--size WxH]\n"
+               "                                       render a project (default: the demo) to a text file\n"
+               "  infinite_canvas --version | --help\n"
+               "\n"
+               "Project format " IC_STORAGE_FORMAT_STRING "\n",
+               stdout);
+}
+
+void error(const std::string& message) {
+    std::fprintf(stderr, "error: %s\n", message.c_str());
 }
 
 int snapshot(const std::string& out, const std::string& project, int w, int h) {
@@ -36,16 +40,14 @@ int snapshot(const std::string& out, const std::string& project, int w, int h) {
     } else {
         ic::JsonStorage storage;
         if (!storage.loadCanvas(canvas, project)) {
-            std::cerr << "error: " << storage.lastError() << "\n";
+            error(storage.lastError());
             return 1;
         }
     }
-    std::ofstream f(ic::path::fromUtf8(out), std::ios::binary);
-    if (!f) {
-        std::cerr << "error: cannot write " << out << "\n";
+    if (!ic::file::write(ic::path::fromUtf8(out), ic::renderSnapshot(canvas, w, h))) {
+        error("cannot write " + out);
         return 1;
     }
-    f << ic::renderSnapshot(canvas, w, h);
     return 0;
 }
 
@@ -62,7 +64,7 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (arg == "-v" || arg == "--version") {
-            std::cout << IC_VERSION_STRING << "\n";
+            std::puts(IC_VERSION_STRING);
             return 0;
         }
         if (arg == "-n" && i + 1 < argc) {
@@ -71,11 +73,11 @@ int main(int argc, char* argv[]) {
             snapshotOut = argv[++i];
         } else if (arg == "--size" && i + 1 < argc) {
             if (std::sscanf(argv[++i], "%dx%d", &snapW, &snapH) != 2 || snapW < 40 || snapH < 10) {
-                std::cerr << "error: --size expects WxH, at least 40x10\n";
+                error("--size expects WxH, at least 40x10");
                 return 2;
             }
         } else if (!arg.empty() && arg[0] == '-') {
-            std::cerr << "error: unknown option " << arg << "\n\n";
+            error("unknown option " + arg);
             printUsage();
             return 2;
         } else {
@@ -91,7 +93,7 @@ int main(int argc, char* argv[]) {
         app.projects().createProject(newName);
     } else if (!projectPath.empty()) {
         if (app.projects().openProject(projectPath).empty()) {
-            std::cerr << "error: " << app.projects().lastError() << "\n";
+            error(app.projects().lastError());
             return 1;
         }
     } else {
@@ -99,7 +101,7 @@ int main(int argc, char* argv[]) {
     }
     return app.run();
 #else
-    std::cerr << "The interactive editor needs the Windows console; only --snapshot is available here.\n";
+    std::fputs("The interactive editor needs the Windows console; only --snapshot is available here.\n", stderr);
     return 2;
 #endif
 }

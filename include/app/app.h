@@ -59,7 +59,7 @@ private:
     void handle(InputResult result);
 
     void showContextMenu();
-    void showProjectMenu(int x, int y);
+    void showProjectMenu(int x, int y, bool onCanvas = false);
     void showNodeMenu(int x, int y);
     void showConnectionMenu(int x, int y);
     void openProjectDialog(int x, int y);
