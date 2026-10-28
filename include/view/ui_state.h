@@ -79,6 +79,13 @@ struct UiState {
     std::string anchorHoverNode;
     Anchor anchorHover;
 
+    // Outline sidebar: width in columns (including the divider) and whether
+    // the mouse is on the divider. A layout preference, not editor state:
+    // it survives resetting the rest of UiState (see resetKeepingLayout).
+    int sidebarWidth = 26;
+    bool dividerHover = false;
+    bool draggingDivider = false;
+
     // Live line from the source to the mouse while dragging a connection.
     bool connectPreview = false;
     int previewX = 0, previewY = 0;
@@ -103,6 +110,13 @@ struct UiState {
     void clearSelection() {
         selected.clear();
         selectedConnection.clear();
+    }
+
+    // Back to a fresh state (new project, revert) but keep layout choices.
+    void resetKeepingLayout() {
+        const int width = sidebarWidth;
+        *this = UiState{};
+        sidebarWidth = width;
     }
 
     // Drops references to nodes/connections that no longer exist (after a

@@ -26,7 +26,17 @@ struct ScreenRect {
 // The region of the console the canvas is drawn in: everything except the
 // sidebar on the left and the status rows at the top and bottom.
 struct CanvasArea {
+    // Sidebar width in columns, including its divider column. The user can
+    // drag the divider; 1 means collapsed (just the divider is left).
     static constexpr int kSidebarWidth = 26;
+    static constexpr int kSidebarCollapsed = 1;
+    static constexpr int kMinCanvasWidth = 20;
+
+    static int clampSidebar(int sidebar, int consoleWidth) {
+        const int maxSidebar = consoleWidth - kMinCanvasWidth;
+        if (maxSidebar < kSidebarCollapsed) return 0;  // console too narrow for any sidebar
+        return sidebar < kSidebarCollapsed ? kSidebarCollapsed : sidebar > maxSidebar ? maxSidebar : sidebar;
+    }
 
     int left = 0;
     int top = 0;
@@ -39,8 +49,8 @@ struct CanvasArea {
     int height() const { return bottom - top + 1; }
     bool contains(int x, int y) const { return x >= left && x <= right && y >= top && y <= bottom; }
 
-    static CanvasArea forConsole(int width, int height) {
-        const int sidebar = width >= kSidebarWidth + 10 ? kSidebarWidth : 0;
+    static CanvasArea forConsole(int width, int height, int sidebarWidth = kSidebarWidth) {
+        const int sidebar = clampSidebar(sidebarWidth, width);
         return {sidebar, 1, width - 1, height - 2};
     }
 };

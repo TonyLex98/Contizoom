@@ -68,7 +68,9 @@ std::string formatTime(uint64_t unixSeconds) {
 
 }  // namespace
 
-App::App() : projects_(std::make_unique<JsonStorage>()) {}
+App::App() : projects_(std::make_unique<JsonStorage>()) {
+    ui_.sidebarWidth = Settings::load().sidebarWidth;
+}
 
 App::~App() {
     projects_.flushAll();
@@ -105,12 +107,12 @@ void App::bindHandler() {
     if (!p || !c) {
         handler_ = nullptr;
         boundProject_.clear();
-        ui_ = UiState{};
+        ui_.resetKeepingLayout();
         return;
     }
     auto& h = handlers_[p->uuid];
     if (!h) h = std::make_unique<InputHandler>(*c, ui_);
-    if (boundProject_ != p->uuid) ui_ = UiState{};
+    if (boundProject_ != p->uuid) ui_.resetKeepingLayout();
     handler_ = h.get();
     boundProject_ = p->uuid;
     ui_.prune(*c);
@@ -215,6 +217,12 @@ void App::handle(InputResult result) {
         case InputResult::SidebarNodeClick:
             if (handler_) handler_->zoomToNode(handler_->sidebarClickedUuid());
             break;
+        case InputResult::LayoutChanged: {
+            Settings settings = Settings::load();
+            settings.sidebarWidth = ui_.sidebarWidth;
+            settings.save();
+            break;
+        }
         default: break;
     }
 }
@@ -343,7 +351,7 @@ void App::showProjectMenu(int x, int y, bool onCanvas) {
         case kRevert:
             projects_.flushAll();
             if (projects_.revert()) {
-                ui_ = UiState{};
+                ui_.resetKeepingLayout();
                 if (handler_) handler_->clearHistory();
                 setStatus(tr(Msg::StatusReverted));
             } else {

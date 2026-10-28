@@ -123,6 +123,8 @@ void ConsoleRenderer::render(const Canvas& canvas, const UiState& ui, const HudI
     screenRects_.clear();
     sidebarRects_.clear();
     editorRect_ = ScreenRect{};
+    // The sidebar width is the user's (draggable) choice.
+    canvasArea_ = CanvasArea::forConsole(buffer_.width(), buffer_.height(), ui.sidebarWidth);
 
     auto visible = canvas.getVisibleNodes(canvas.viewport, canvasArea_.width(), canvasArea_.height());
     std::vector<const Node*> sorted;
@@ -647,6 +649,8 @@ void ConsoleRenderer::drawHud(const Canvas& canvas, const UiState& ui, const Hud
         help = tr(Msg::HelpEditLine);
     } else if (!ui.connectionSource.empty()) {
         help = tr(Msg::HelpConnecting);
+    } else if (ui.dividerHover || ui.draggingDivider) {
+        help = tr(Msg::HelpDivider);
     } else if (auto c = canvas.getConnection(ui.selectedConnection)) {
         help = tr(Msg::HelpConnection, {tr(styleLabel(c->type))});
     } else {
@@ -662,7 +666,12 @@ void ConsoleRenderer::drawSidebar(const Canvas& canvas, const UiState& ui) {
     if (sideW <= 0) return;
 
     buffer_.fill(0, 1, sideW, h - 2, L' ', color::Default);
-    for (int y = 1; y < h - 1; ++y) buffer_.put(sideW - 1, y, L'│', color::DarkGray);
+    // The divider is a handle: brighter and doubled while hovered or dragged.
+    const bool active = ui.dividerHover || ui.draggingDivider;
+    for (int y = 1; y < h - 1; ++y) {
+        buffer_.put(sideW - 1, y, active ? L'║' : L'│', active ? color::BrightCyan : color::DarkGray);
+    }
+    if (sideW < 8) return;  // collapsed: just the handle
 
     buffer_.text(1, 1, tr(Msg::SidebarTitle), color::BrightCyan, sideW - 2);
     if (canvas.allNodes().empty()) {

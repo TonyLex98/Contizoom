@@ -185,12 +185,18 @@ Anchor InputHandler::anchorAt(int x, int y, std::string& uuid, bool anyBox) cons
     return bestAnchor;
 }
 
+// The column between the outline sidebar and the canvas.
+bool InputHandler::onDivider(int x, int y) const {
+    return area_.left > 0 && x == area_.left - 1 && y >= area_.top && y <= area_.bottom;
+}
+
 bool InputHandler::isDoubleClick(const std::string& target, int x, int y, uint64_t now) const {
     return !target.empty() && target == lastClickTarget_ && now - lastClickTime_ < kDoubleClickMs &&
            std::abs(x - lastClickX_) <= 1 && std::abs(y - lastClickY_) <= 1;
 }
 
 void InputHandler::updateHover(int x, int y) {
+    ui_.dividerHover = onDivider(x, y);
     auto node = nodeAt(x, y);
     ui_.hovered = node ? node->uuid : std::string();
 
@@ -482,6 +488,30 @@ InputResult InputHandler::onMouseDown(const InputEvent& e) {
     }
     if (e.button != MouseButton::Left) return InputResult::NotHandled;
 
+    // The sidebar divider: drag to resize, double-click to hide/show.
+    if (onDivider(x, y)) {
+        const uint64_t now = clock::monotonicMillis();
+        static const std::string kDivider = "#divider";
+        const bool doubleClick = isDoubleClick(kDivider, x, y, now);
+        lastClickTarget_ = kDivider;
+        lastClickTime_ = doubleClick ? 0 : now;
+        lastClickX_ = x;
+        lastClickY_ = y;
+        if (doubleClick) {
+            if (ui_.sidebarWidth > CanvasArea::kSidebarCollapsed) {
+                expandedSidebarWidth_ = ui_.sidebarWidth;
+                ui_.sidebarWidth = CanvasArea::kSidebarCollapsed;
+            } else {
+                ui_.sidebarWidth = std::max(expandedSidebarWidth_, 12);
+            }
+            gesture_ = Gesture::None;
+            return InputResult::LayoutChanged;
+        }
+        gesture_ = Gesture::Divider;
+        ui_.draggingDivider = true;
+        return InputResult::Handled;
+    }
+
     // Outline in the sidebar: jump to the box.
     for (const auto& [uuid, sr] : sidebarRects_) {
         const CellBox b = cellBox(sr);
@@ -606,6 +636,11 @@ InputResult InputHandler::onMouseMove(const InputEvent& e) {
             ui_.area.update(toWorldX(x), toWorldY(y));
             break;
 
+        case Gesture::Divider:
+            // The divider follows the mouse; the sidebar ends just left of it.
+            ui_.sidebarWidth = CanvasArea::clampSidebar(x + 1, area_.right + 1);
+            break;
+
         case Gesture::Pan:
             pan(-(x - lastX_), -(y - lastY_));
             break;
@@ -666,6 +701,12 @@ InputResult InputHandler::onMouseUp(const InputEvent& e) {
 
         case Gesture::Connect: finishConnect(x, y); break;
         case Gesture::AreaSelect: finishAreaSelect(); break;
+        case Gesture::Divider:
+            ui_.draggingDivider = false;
+            if (ui_.sidebarWidth > CanvasArea::kSidebarCollapsed) expandedSidebarWidth_ = ui_.sidebarWidth;
+            gesture_ = Gesture::None;
+            updateHover(x, y);
+            return InputResult::LayoutChanged;
         case Gesture::Pan: canvas_.markConfigChanged(); break;
         case Gesture::PendingClick:  // a plain click only selects; editing is a double-click
         case Gesture::None: break;

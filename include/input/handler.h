@@ -15,7 +15,16 @@
 
 namespace ic {
 
-enum class InputResult { Handled, NotHandled, RequestQuit, RequestSave, RequestNew, RequestMenu, SidebarNodeClick };
+enum class InputResult {
+    Handled,
+    NotHandled,
+    RequestQuit,
+    RequestSave,
+    RequestNew,
+    RequestMenu,
+    SidebarNodeClick,
+    LayoutChanged,  // the sidebar was resized or toggled (worth saving)
+};
 
 // What a right-click landed on, so the app can show the matching menu.
 struct ContextTarget {
@@ -88,7 +97,7 @@ private:
     ContextTarget context_;
 
     // Mouse gesture in progress.
-    enum class Gesture { None, PendingClick, DragNodes, Pan, Resize, Connect, AreaSelect };
+    enum class Gesture { None, PendingClick, DragNodes, Pan, Resize, Connect, AreaSelect, Divider };
     Gesture gesture_ = Gesture::None;
     int pressX_ = 0, pressY_ = 0;
     int lastX_ = 0, lastY_ = 0;
@@ -115,6 +124,7 @@ private:
     ResizeStart resize_;
 
     Anchor connectFromAnchor_;
+    int expandedSidebarWidth_ = CanvasArea::kSidebarWidth;  // restored by double-click after collapsing
 
     // Double-click detection.
     uint64_t lastClickTime_ = 0;
@@ -139,6 +149,7 @@ private:
     ResizeCorner resizeCornerAt(int x, int y, std::string& uuid) const;
     Anchor anchorAt(int x, int y, std::string& uuid, bool anyBox) const;
     bool isDoubleClick(const std::string& target, int x, int y, uint64_t now) const;
+    bool onDivider(int x, int y) const;
     void updateHover(int x, int y);
 
     // Runs an edit and records it as one undo step if it changed anything.

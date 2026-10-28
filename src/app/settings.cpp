@@ -17,6 +17,7 @@ Settings Settings::load() {
     try {
         const json::Value v = json::parse(text);
         s.language = v.getString("language");
+        s.sidebarWidth = v.getInt("sidebar_width", s.sidebarWidth);
     } catch (const json::ParseError&) {
         // A broken settings file just means defaults.
     }
@@ -26,6 +27,7 @@ Settings Settings::load() {
 bool Settings::save() const {
     json::Value v = json::Value::object();
     v.set("language", language);
+    v.set("sidebar_width", sidebarWidth);
     return file::write(path::fromUtf8(path()), json::serialize(v));
 }
 

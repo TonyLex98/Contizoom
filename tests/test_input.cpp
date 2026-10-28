@@ -144,6 +144,44 @@ TEST(input_context_new_box_here_inside_a_box) {
     CHECK_NEAR(h.canvas.computeWorldRect(child->uuid).x, h.canvas.viewport.centerX + (b.x + 30 - h.renderer.canvasArea().centerX()), 1e-9);
 }
 
+TEST(input_sidebar_divider_drags_and_toggles) {
+    Harness h;
+    h.canvas.createNode("", {0, 0, 20, 6}, "box");
+    h.frame();
+    const int divider = h.renderer.canvasArea().left - 1;
+    CHECK_EQ(divider, 25);
+
+    h.mouse(InputType::MouseMove, divider, 10);
+    CHECK(h.ui.dividerHover);
+    h.mouse(InputType::MouseDown, divider, 10);
+    CHECK(h.ui.draggingDivider);
+    h.mouse(InputType::MouseMove, divider + 15, 10);
+    CHECK_EQ(h.renderer.canvasArea().left, 41);  // the canvas starts right after the new divider
+    CHECK(h.mouse(InputType::MouseUp, divider + 15, 10) == InputResult::LayoutChanged);
+    CHECK_EQ(h.ui.sidebarWidth, 41);
+    CHECK(!h.ui.draggingDivider);
+
+    // Can't squeeze the canvas below its minimum.
+    h.mouse(InputType::MouseDown, 40, 10);
+    h.mouse(InputType::MouseMove, 99, 10);
+    h.mouse(InputType::MouseUp, 99, 10);
+    CHECK_EQ(h.ui.sidebarWidth, 100 - CanvasArea::kMinCanvasWidth);
+
+    // Double-click collapses it to just the handle, and back.
+    const int d = h.renderer.canvasArea().left - 1;
+    h.mouse(InputType::MouseDown, d, 10);
+    h.mouse(InputType::MouseUp, d, 10);
+    CHECK(h.mouse(InputType::MouseDown, d, 10) == InputResult::LayoutChanged);
+    h.mouse(InputType::MouseUp, d, 10);
+    CHECK_EQ(h.ui.sidebarWidth, CanvasArea::kSidebarCollapsed);
+    CHECK_EQ(h.renderer.canvasArea().left, 1);
+    h.mouse(InputType::MouseDown, 0, 10);
+    h.mouse(InputType::MouseUp, 0, 10);
+    h.mouse(InputType::MouseDown, 0, 10);
+    h.mouse(InputType::MouseUp, 0, 10);
+    CHECK_EQ(h.ui.sidebarWidth, 100 - CanvasArea::kMinCanvasWidth);  // restored
+}
+
 TEST(input_double_click_header_renames_with_unicode) {
     Harness h;
     const std::string id = h.canvas.createNode("", {0, 0, 24, 8}, "old");

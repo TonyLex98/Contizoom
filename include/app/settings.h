@@ -9,7 +9,8 @@ namespace ic {
 // projects folder. Unknown fields are ignored and missing ones keep their
 // defaults, so the file stays compatible across versions.
 struct Settings {
-    std::string language;  // language code ("ru"); empty = follow the system
+    std::string language;   // language code ("ru"); empty = follow the system
+    int sidebarWidth = 26;  // outline sidebar width in columns (1 = collapsed)
 
     static std::string path();
     static Settings load();

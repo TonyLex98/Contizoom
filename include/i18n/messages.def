@@ -43,6 +43,12 @@ IC_MSG(HelpConnecting,
        "在另一个框上松开以连接（在 • 上松开可固定端点）   Esc：取消",
        "Relâchez sur une autre boîte pour relier (sur un • pour fixer l'extrémité)   Échap : annuler",
        "Suelta sobre otra caja para conectar (sobre un • para fijar el extremo)   Esc: cancelar")
+IC_MSG(HelpDivider,
+       "Drag to resize the outline   Double-click: hide / show",
+       "Тяните, чтобы изменить ширину панели   Двойной клик: скрыть / показать",
+       "拖动以调整大纲宽度   双击：隐藏 / 显示",
+       "Glissez pour redimensionner le plan   Double-clic : masquer / afficher",
+       "Arrastra para cambiar el ancho del esquema   Doble clic: ocultar / mostrar")
 IC_MSG(HelpConnection,
        "Connection ({0}):   T style   V reverse   F2/Enter rename   X delete   Right-click menu   Esc deselect",
        "Связь ({0}):   T стиль   V развернуть   F2/Enter имя   X удалить   Правый клик: меню   Esc снять выделение",
