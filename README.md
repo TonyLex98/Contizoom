@@ -1,9 +1,13 @@
 # Contizoom: Infinite Canvas for the terminal
 
+[![CI](https://github.com/TonyLex98/Contizoom/actions/workflows/ci.yml/badge.svg)](https://github.com/TonyLex98/Contizoom/actions/workflows/ci.yml)
+
 A keyboard-and-mouse driven **zoomable outliner** that runs in the Windows console.
 You write notes in boxes, put boxes inside boxes as deep as you like, connect them
 with arrows, and zoom out to see the whole map or zoom into one box until its
 contents fill the screen.
+
+Консольный редактор вложенных диаграмм на C++17: блоки внутри блоков, связи стрелками, масштабирование от общей карты до одного блока.
 
 Written in modern C++17 with no third-party dependencies: the JSON reader/writer,
 UTF-8 handling, layout engine and test harness are all part of the project.
@@ -231,3 +235,7 @@ export round-trips for every format, the automatic layout, the recent list, rend
 and full input scenarios driven through the real renderer layout (click, drag, rename, connect,
 zoom). CI builds with MSVC and GCC with warnings as errors, and runs the tests under
 AddressSanitizer and UndefinedBehaviorSanitizer.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
