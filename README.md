@@ -12,6 +12,8 @@ contents fill the screen.
 Written in modern C++17 with no third-party dependencies: the JSON reader/writer,
 UTF-8 handling, layout engine and test harness are all part of the project.
 
+**Download:** a ready Windows x64 build is on the [Releases](https://github.com/TonyLex98/Contizoom/releases/latest) page. It is a single `infinite_canvas.exe` with no installer and no runtime to install; run it in a console window (cmd, PowerShell or Windows Terminal).
+
 ```text
  Infinite Canvas  │  Welcome  │  zoom 48%  │  12 boxes
  OUTLINE                 │
